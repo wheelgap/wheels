@@ -3,11 +3,17 @@ name: Pages
 # Builds the index (simple/), the page and data/gap-wheels.json from data/gap-wheels.json and deploys them to
 # https://wheelgap.github.io/wheels/. The publish job of gap-wheels.yml starts this after committing the index (a push
 # made with the workflow's token doesn't trigger workflows). Runs only our own code.
+#
+# Each project page also lists PyPI's own files for that project (so uv, which takes a package from one index, sees
+# every release), so it runs hourly to pick up new uploads. If PyPI can't be read the build step fails and nothing is
+# deployed: the previous index stays up rather than one with files missing.
 
 on:
   push:
     branches: [main]
     paths: ["data/**", "scripts/build_gap_index.py", ".github/workflows/pages.yml"]
+  schedule:
+    - cron: "41 * * * *"
   workflow_dispatch:
 
 permissions:
