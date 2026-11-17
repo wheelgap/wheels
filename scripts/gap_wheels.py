@@ -11,7 +11,8 @@
         --release-dir DIR
 
 A *pair* is a release and lab target the build lab built cleanly (data/builds.json: built, imported, a compiled
-extension module, and on free-threaded Python the GIL kept off), so PyPI has no wheel for it there. Each pair is built
+extension module or native code without one in a py3-none-<platform> wheel, and on free-threaded Python the GIL kept
+off), so PyPI has no wheel for it there. Each pair is built
 twice, in separate jobs on separate runners:
 
 - from the sdist alone (`pip download --no-binary NAME`: build tools still come as wheels, as pip installs them),
@@ -212,9 +213,16 @@ REPAIR_TOOLS = ("auditwheel==6.8.2", "patchelf==0.19.1.0")
 # imports to those names and adds the folder to the DLL search path in the package's __init__.py. A mangled name
 # can't be met by a copy already on the system or loaded in the process, so the install test proves the bundled one
 # loads. `wheel` retags a py3-none-<platform> wheel to its target's exact tag. Each with its dependencies pinned and
-# installed with --no-deps, so nothing else is resolved at build time. SOURCE_DATE_EPOCH fixes both tools' zips.
+# installed with --no-deps and --require-hashes (PyPI lets a maintainer add files to an existing version), so nothing
+# else is resolved or taken at build time. SOURCE_DATE_EPOCH fixes both tools' zips.
 WINDOWS_REPAIR_TOOLS = ("delvewheel==1.13.2", "pefile==2024.8.26")
 RETAG_TOOLS = ("wheel==0.48.0", "packaging==26.3")
+TOOL_HASHES = {  # sha256 of each pinned tool's one wheel on PyPI
+    "delvewheel==1.13.2": "acdb03e1d7040982db65e525065f08163e9dedad54eeb8c7038be61f76c08816",
+    "pefile==2024.8.26": "76f8b485dcd3b1bb8166f1128d395fa3d87af26360c2358fb75b80019b957c6f",
+    "wheel==0.48.0": "3217dcc807155e45db462d7ef2431f5ddda0d7273b700d05a67b271ceb1287ab",
+    "packaging==26.3": "d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c",
+}
 
 
 def tool_venv(work: Path, name: str, tools: tuple[str, ...]) -> Path | None:
@@ -224,9 +232,11 @@ def tool_venv(work: Path, name: str, tools: tuple[str, ...]) -> Path | None:
     subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=INSTALL_TIMEOUT)
     bin_dir = venv / ("Scripts" if os.name == "nt" else "bin")
     py = bin_dir / ("python.exe" if os.name == "nt" else "python")
+    pins = work / f"{name}.txt"
+    pins.write_text("".join(f"{t} --hash=sha256:{TOOL_HASHES[t]}\n" for t in tools), encoding="utf-8")
     i = subprocess.run([str(py), "-m", "pip", "install", "--no-cache-dir", "--no-deps", "--only-binary", ":all:",
-                        *tools], check=False, env=build_env(), capture_output=True, text=True, errors="replace",
-                       timeout=INSTALL_TIMEOUT)  # fmt: skip
+                        "--require-hashes", "-r", str(pins)], check=False, env=build_env(), capture_output=True,
+                       text=True, errors="replace", timeout=INSTALL_TIMEOUT)  # fmt: skip
     if i.returncode != 0:
         print((i.stdout + i.stderr)[-3000:])
         print(f"gap_wheels: couldn't install {', '.join(tools)}", file=sys.stderr)
@@ -321,11 +331,15 @@ def repair(wheel: Path, work: Path, plat: str | None = None) -> Path | None:
     return found[0]
 
 
-def finish_wheel(wheel: Path, work: Path, plat: str | None, tag: str | None) -> Path | None:
+def finish_wheel(
+    wheel: Path, work: Path, plat: str | None, tag: str | None, platform_pattern: str | None = None
+) -> Path | None:
     """The built wheel as it will be compared and published, or None (said why): on Linux repaired to `plat`
-    (auditwheel); on Windows with the VC++ runtime DLLs it needs and a user may lack bundled (delvewheel), and only
-    those (any other missing DLL keeps it unpublishable, and stage says so); a py3-none-<platform> wheel retagged to
-    `tag`, its target's one publishable tag."""
+    (auditwheel); a py3-none-<platform> wheel retagged to `tag`, its target's one publishable tag, but only if every
+    platform in its own tag is the target's (`platform_pattern`, build_lab.TARGETS' `wheel`); then on Windows with
+    the VC++ runtime DLLs it needs and a user may lack bundled (delvewheel), and only those, by name (any other
+    missing DLL keeps it unpublishable, and stage says so). Retagged before bundling: delvewheel leaves Python's own
+    vcruntime140 alone only for a wheel with a CPython tag."""
     wheels = [wheel]
     if sys.platform == "linux":
         # pip wheel tags a Linux build linux_*, which pip installs on any libc: auditwheel bundles the libraries it
@@ -339,19 +353,36 @@ def finish_wheel(wheel: Path, work: Path, plat: str | None, tag: str | None) -> 
             print("gap_wheels: repair failed (the wheel built; auditwheel couldn't repair it)", file=sys.stderr)
             return None
         wheels = [repaired]
+    if tag is not None and pure_platform_tag(wheels[0].name):
+        platforms = wheels[0].name[: -len(".whl")].split("-")[-1].split(".")
+        if platform_pattern is None or not all(re.fullmatch(platform_pattern, p, re.ASCII) for p in platforms):
+            print(f"gap_wheels: {wheels[0].name} isn't for this target's platform; not retagged", file=sys.stderr)
+            return None
+        retagged = retag(wheels[0], work, tag)
+        if retagged is None:
+            return None
+        wheels = [retagged]
     needs = missing_dlls(wheels[0].read_bytes()) if os.name == "nt" else None
     if needs and set(needs) <= VC_RUNTIME_DLLS:  # anything else keeps it unpublishable: stage says so, nothing bundled
+        if (spaces := namespace_folders(wheels[0])):
+            # delvewheel would add an __init__.py there, turning a shared namespace into a package of its own.
+            print(f"gap_wheels: not bundled: namespace package folders {', '.join(spaces)}", file=sys.stderr)
+            return wheels[0]
         print(f"gap_wheels: before bundling {', '.join(needs)}: {wheels[0].name} sha256 {sha256(wheels[0])}")
         bundled = bundle_dlls(wheels[0], work)
         if bundled is None:
             return None
         wheels = [bundled]
-    if tag is not None and pure_platform_tag(wheels[0].name):
-        retagged = retag(wheels[0], work, tag)
-        if retagged is None:
-            return None
-        wheels = [retagged]
     return wheels[0]
+
+
+def namespace_folders(wheel: Path) -> list[str]:
+    """The wheel's top-level folders that hold a .pyd or .dll but no __init__.py (a namespace package)."""
+    with zipfile.ZipFile(wheel) as z:
+        names = z.namelist()
+    tops = {n.split("/", 1)[0] for n in names if "/" in n and n.lower().endswith((".pyd", ".dll"))}
+    tops = {t for t in tops if not t.endswith((".dist-info", ".data", ".libs"))}
+    return sorted(t for t in tops if f"{t}/__init__.py" not in names)
 
 
 def run_build(
@@ -363,6 +394,7 @@ def run_build(
     keep: Path | None = None,
     plat: str | None = None,
     tag: str | None = None,
+    platform_pattern: str | None = None,
 ) -> dict:
     """Download the sdist, build the wheel from a fixed folder, hash it, and (first attempt) install it from a local
     folder into a fresh venv with nothing compiled. On Linux the wheel is repaired to `plat` (auditwheel); on Windows
@@ -399,7 +431,7 @@ def run_build(
     if len(wheels) != 1 or not WHEEL.fullmatch(wheels[0].name):
         print(f"gap_wheels: expected one wheel, found {len(wheels)}", file=sys.stderr)
         return fields
-    finished = finish_wheel(wheels[0], work, plat, tag)
+    finished = finish_wheel(wheels[0], work, plat, tag, platform_pattern)
     if finished is None:
         return fields
     wheels = [finished]
@@ -444,7 +476,7 @@ def cmd_build(args: argparse.Namespace) -> int:
         keep = Path(args.wheel_dir) if args.wheel_dir else None
         plat = build_lab.TARGETS[args.target].get("plat")
         fields = run_build(args.name, args.version, args.attempt, Path(tmp), members, keep, plat=plat,
-                           tag=PUBLISH_TAGS.get(target))
+                           tag=PUBLISH_TAGS.get(target), platform_pattern=build_lab.TARGETS[target]["wheel"])
     result = {"schema": SCHEMA, "name": args.name, "version": args.version, "target": target,
               "attempt": args.attempt, "runner": args.runner, **fields}  # fmt: skip
     Path(args.out).write_text(json.dumps(result) + "\n", encoding="utf-8")
@@ -850,7 +882,8 @@ PUBLISH_TAGS = {
 # DLLs every Windows machine with that CPython has: the interpreter's, the VC++ runtime Python's installer ships
 # (vcruntime140 only, not msvcp140 or vcomp140), the Universal CRT and core system DLLs. An extension importing any
 # other DLL that the wheel doesn't carry works on GitHub's images (they have the full VC++ redistributable) and fails
-# on a user's machine with "DLL load failed", so it isn't published. Bundling (delvewheel) would change the bytes.
+# on a user's machine with "DLL load failed", so it isn't published, unless it's the VC++ runtime, which the build
+# bundles (finish_wheel, delvewheel) before hashing.
 SYSTEM_DLLS = frozenset({
     "python3.dll", "vcruntime140.dll", "vcruntime140_1.dll", "ucrtbase.dll", "kernel32.dll", "kernelbase.dll",
     "ntdll.dll", "user32.dll", "gdi32.dll", "advapi32.dll", "shell32.dll", "shlwapi.dll", "ole32.dll",
@@ -1072,8 +1105,15 @@ def tag_ok(wheel: str, target: str) -> bool:
 
 
 def pe_imports(data: bytes) -> set[str] | None:
-    """The DLLs a PE file (.pyd/.dll) imports, normal and delay-loaded, lowercased; None if it can't be read. Reads
-    untrusted bytes, so every offset is bounds-checked and anything odd is None (the wheel isn't published)."""
+    """The DLLs a PE file (.pyd/.dll) imports, normal and delay-loaded, lowercased; None if it can't be read."""
+    info = pe_info(data)
+    return None if info is None else info[1] | info[2]
+
+
+def pe_info(data: bytes) -> tuple[int, set[str], set[str]] | None:
+    """A PE file's machine (0xAA64 ARM64, 0x8664 x64) and the DLLs it imports, normal and delay-loaded apart,
+    lowercased; None if it can't be read. Reads untrusted bytes, so every offset is bounds-checked and anything odd is
+    None (the wheel isn't published)."""
 
     def u16(o: int) -> int:
         if o < 0 or o + 2 > len(data):
@@ -1091,7 +1131,7 @@ def pe_imports(data: bytes) -> set[str] | None:
         pe = u32(0x3C)
         if data[pe : pe + 4] != b"PE\0\0":
             return None
-        sections, opt_size = u16(pe + 6), u16(pe + 20)
+        machine, sections, opt_size = u16(pe + 4), u16(pe + 6), u16(pe + 20)
         opt = pe + 24
         magic = u16(opt)
         if magic not in (0x10B, 0x20B):
@@ -1115,8 +1155,8 @@ def pe_imports(data: bytes) -> set[str] | None:
                 raise ValueError
             return data[o:end].decode("ascii").lower()
 
-        names: set[str] = set()
-        for index, step, name_field in ((1, 20, 12), (13, 32, 4)):  # import table; delay-load (name RVA at +4)
+        found: tuple[set[str], set[str]] = (set(), set())
+        for names, index, step, name_field in ((found[0], 1, 20, 12), (found[1], 13, 32, 4)):  # delay: name at +4
             if index >= count:
                 continue
             rva = u32(dirs + 8 * index)
@@ -1132,7 +1172,7 @@ def pe_imports(data: bytes) -> set[str] | None:
                 names.add(name_at(u32(o + n * step + name_field)))
             else:
                 raise ValueError
-        return names
+        return machine, found[0], found[1]
     except (ValueError, UnicodeDecodeError):
         return None
 
@@ -1178,11 +1218,16 @@ def missing_dlls(wheel: bytes) -> list[str] | None:
         missing: set[str] = set()
         for info in binaries:
             data = bounded(z, info.filename, 200_000_000)
-            imports = pe_imports(data) if data is not None else None
-            if imports is None:
+            read = pe_info(data) if data is not None else None
+            if read is None:
                 return None
-            here = beside[info.filename.lower().rpartition("/")[0]] | bundled
-            missing |= {n for n in imports if n not in here and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n)}
+            _, normal, delayed = read
+            here = beside[info.filename.lower().rpartition("/")[0]]
+            # The package's DLL search path (delvewheel's add_dll_directory) serves a .pyd/.dll's normal imports.
+            # Not an .exe's (its own process) nor a delay-load (MSVC's helper calls LoadLibraryExA(name, NULL, 0)).
+            served = here | bundled if not info.filename.lower().endswith(".exe") else here
+            missing |= {n for n in normal if n not in served and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n)}
+            missing |= {n for n in delayed if n not in here and n not in SYSTEM_DLLS and not SYSTEM_DLL.fullmatch(n)}
     return sorted(missing)
 
 
@@ -1371,6 +1416,58 @@ def search_dirs(member: str, runpath: list[str], data_dir: str) -> list[tuple[st
     return dirs
 
 
+PE_MACHINES = {"win_arm64": 0xAA64, "win_amd64": 0x8664}
+
+
+def foreign_binaries(wheel: bytes, plat: str) -> list[str] | None:
+    """The wheel's .pyd/.dll/.exe files built for another CPU than the Windows platform tag `plat` says; None if one
+    can't be read. A filename's tag is only a label: this reads each file's own PE header."""
+    want = PE_MACHINES.get(plat)
+    if want is None:
+        return None
+    with zipfile.ZipFile(io.BytesIO(wheel)) as z:
+        binaries = [i.filename for i in z.infolist() if i.filename.lower().endswith((".pyd", ".dll", ".exe"))]
+        if len(binaries) > 500:
+            return None
+        wrong = []
+        for name in binaries:
+            data = bounded(z, name, 200_000_000)
+            info = pe_info(data) if data is not None else None
+            if info is None:
+                return None
+            if info[0] != want:
+                wrong.append(name)
+    return wrong
+
+
+def wheel_file_tags(wheel: bytes) -> list[str] | None:
+    """The `Tag:` lines of the wheel's one .dist-info/WHEEL file, in order; None if there isn't exactly one, or it
+    can't be read. What an installer reads, as against the filename, which the retag also rewrites."""
+    with zipfile.ZipFile(io.BytesIO(wheel)) as z:
+        found = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/WHEEL", n)]
+        if len(found) != 1:
+            return None
+        data = bounded(z, found[0], 100_000)
+    if data is None:
+        return None
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    return [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("Tag:")]
+
+
+def wheel_tags_problem(wheel: bytes, tag: str | None) -> str | None:
+    """Why the wheel's own WHEEL file doesn't say exactly `tag`, its target's one tag (None if it does)."""
+    try:
+        tags = wheel_file_tags(wheel)
+    except zipfile.BadZipFile:
+        tags = None
+    if tag is None or tags != [tag]:
+        return f"its WHEEL file's tags aren't exactly {tag}: {', '.join(tags or ['unreadable'])[:200]}"
+    return None
+
+
 def missing_libs(wheel: bytes, plat: str) -> list[str] | None:
     """What the wheel's ELF files (every shared object, by name, and any other file that is ELF) need that a system of
     the platform tag `plat` may not have: libraries that are neither on its policy's list (LINUX_POLICIES) nor in the
@@ -1473,8 +1570,15 @@ def take_wheel(repo: str, wheel: dict) -> tuple[bytes | None, str | None]:
             break
     if data is None:
         return None, "no build run kept a wheel with the verified sha256"
+    tag = PUBLISH_TAGS.get(wheel["target"])
+    if (why := wheel_tags_problem(data, tag)) is not None:
+        return None, why
     plat = build_lab.TARGETS[wheel["target"]].get("plat")
-    if plat is None:  # Windows: the DLLs its .pyd/.dll files import (PE)
+    if plat is None:  # Windows: the CPU its binaries are for, and the DLLs they import (PE)
+        if (wrong := foreign_binaries(data, tag.rsplit("-", 1)[-1])) is None:
+            return None, "couldn't read its binaries' headers"
+        if wrong:
+            return None, f"has binaries built for another CPU: {', '.join(wrong[:5])}"
         if (missing := missing_dlls(data)) is None:
             return None, "couldn't read its extension modules' imports"
         if missing:
@@ -1573,8 +1677,11 @@ def install_and_import(wheel: Path, target: str, work: Path) -> str | None:
         return "nothing to import"
     if build_lab.TARGETS[target]["python"].endswith("t") and any(a.get("gil_enabled") for a in answers):
         return "importing it turned the GIL back on"
-    native = native_libraries(wheel) if not extensions else []
-    if native:  # native code the package loads itself (ctypes), maybe only later: load each library now
+    # Native code the package loads itself (ctypes), maybe only later: load each library now. Every one in a wheel
+    # without extension modules; on Windows also in a wheel with a bundled .libs folder, since those DLLs' imports
+    # rely on the package's DLL search path, which only loading proves.
+    native = native_libraries(wheel) if not extensions or (os.name == "nt" and has_libs_folder(wheel)) else []
+    if native:
         spec = work / "native.json"
         spec.write_text(json.dumps({"modules": modules, "native": native}), encoding="utf-8")
         try:
@@ -1597,23 +1704,36 @@ for m in spec["modules"]:
     importlib.import_module(m)
 base = sysconfig.get_paths()["platlib"]
 for rel in spec["native"]:
-    ctypes.CDLL(os.path.join(base, *rel.split("/")))
+    path = os.path.join(base, *rel.split("/"))
+    if not os.path.exists(path):
+        path = os.path.join(sysconfig.get_paths()["purelib"], *rel.split("/"))
+    ctypes.CDLL(path)
 print("native-ok", len(spec["native"]))
 """
 
 
 def native_libraries(wheel: Path) -> list[str]:
-    """The native libraries a wheel installs (.dll on Windows, .so and .so.N on Linux), by path in the wheel: the
-    files a wheel without extension modules is for. Not in .dist-info or .data."""
+    """The native libraries a wheel installs for this system (.dll on Windows, .so and .so.N elsewhere), by path in the
+    wheel, not extension modules: the files the package loads itself. Not in .dist-info or .data, nor in a top-level
+    .libs folder: loading a bundled library first would let it answer for its mangled name whatever the search path,
+    so those are loaded only as the others' dependencies."""
     with zipfile.ZipFile(wheel) as z:
         names = [n for n in z.namelist() if not n.endswith("/")]
     keep = []
     for n in names:
-        if n.split("/", 1)[0].endswith((".dist-info", ".data")):
+        if "/" in n and n.split("/", 1)[0].endswith((".dist-info", ".data", ".libs")):
             continue
-        if n.lower().endswith(".dll") or re.search(r"\.so(\.[0-9]+)*$", n):
+        if os.name == "nt":
+            if n.lower().endswith(".dll"):
+                keep.append(n)
+        elif re.search(r"\.so(\.[0-9]+)*$", n) and not re.search(r"\.(cpython-[^/]+|abi3t?|cp3[0-9]+t?-[^/]+)\.so$", n):
             keep.append(n)
     return sorted(keep)
+
+
+def has_libs_folder(wheel: Path) -> bool:
+    with zipfile.ZipFile(wheel) as z:
+        return any("/" in n and n.split("/", 1)[0].endswith(".libs") for n in z.namelist())
 
 
 def cmd_install_test(args: argparse.Namespace) -> int:

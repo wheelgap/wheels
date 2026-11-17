@@ -291,7 +291,8 @@ class Requests(Index):
         self.assertEqual(page.count('id="lightgbm"'), 1)  # one anchor per package, on its first row
         self.assertIn('<tr id="tiktoken">', page)
         self.assertEqual(page.count(
-            'Built at the request of <a href="https://www.reddit.com/user/TumbleweedNo8956/">u/TumbleweedNo8956</a>'), 2)
+            'Built at the request of <a href="https://www.reddit.com/user/TumbleweedNo8956/" rel="nofollow ugc">'
+            "u/TumbleweedNo8956</a>"), 2)
         self.assertNotIn("Built at the request of", page.split('<tr id="tiktoken">')[1])
 
     def test_requests_it_doesnt_trust_are_left_out(self):

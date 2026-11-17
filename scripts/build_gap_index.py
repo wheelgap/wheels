@@ -327,7 +327,7 @@ def human_page(
     for project, wheels in by_project.items():
         asked = requests.get(canonical(project))
         note = (
-            f'<br><small>Built at the request of <a href="{e(asked["url"])}">{e(asked["by"])}</a></small>' if asked else ""
+            f'<br><small>Built at the request of <a href="{e(asked["url"])}" rel="nofollow ugc">{e(asked["by"])}</a></small>' if asked else ""
         )
         for n, w in enumerate(wheels):
             builds = [u for u in w.get("builds") or [] if isinstance(u, str) and u.startswith("https://github.com/")]
@@ -398,7 +398,7 @@ tokenizers = {{ index = "wheelgap" }}</code></pre>
         <li>pip checks each file's hash when it downloads it. You can also check where a file came from with <code>gh attestation verify FILE.whl -R wheelgap/wheels</code>.</li>
         <li>Every wheel, its source hash and both of its build runs are listed in <a href="data/gap-wheels.json">gap-wheels.json</a>.</li>
       </ul>
-      <p>One thing to know: a wheel here is only as safe as the source it was built from. Installing the package the normal way runs the same code. Only packages with an OSI-approved licence (or the PSF licence Python uses) go up.</p>
+      <p>One thing to know: a wheel here is only as safe as the source it was built from. Installing the package the normal way runs the same code. Only packages with an OSI-approved licence (or the PSF licence Python uses) go up. Some Windows wheels also carry Microsoft's Visual C++ runtime DLLs (in a <code>.libs</code> folder), redistributed under Visual Studio's terms, as many wheels on PyPI do.</p>
       <p>The platforms: Windows on ARM for Python 3.14 and 3.14t, Windows x64 for Python 3.15, Linux x86_64 (glibc 2.28 or newer: <code>manylinux_2_28</code>) for Python 3.14t and 3.15, and Alpine Linux on ARM (<code>musllinux_1_2</code>) for Python 3.14. Linux wheels go up only once a maintainer approves a publish run that includes them; the table below shows which are here.</p>
     </section>
     <section>
