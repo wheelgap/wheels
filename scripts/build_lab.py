@@ -51,7 +51,9 @@ SCHEMA = 1
 TARGETS: dict[str, dict[str, str]] = {
     "3.14 win-arm64": {"runner": "windows-11-arm", "python": "3.14", "platform": "win-arm64", "wheel": r"win_arm64"},
     "3.14t win-arm64": {"runner": "windows-11-arm", "python": "3.14t", "platform": "win-arm64", "wheel": r"win_arm64"},
-    # Gap wheels for glibc are built inside the manylinux_2_28 image, so auditwheel can tag them manylinux_2_28 (RHEL 8+,
+    # NOT the tracker's copy any more: this repo's targets carry `image`/`interpreter`/`plat` for gap wheel builds,
+    # which the tracker's build lab (Alpine-only docker path) would misread. Don't sync the two files wholesale.
+    # Gap wheels for glibc are built inside the manylinux_2_28 image (tag 2026.11.14-1), so auditwheel can tag them manylinux_2_28 (RHEL 8+,
     # Debian 11+, Ubuntu 20.04+); a build on the runner itself (glibc 2.39) could only be tagged for glibc 2.39.
     # `interpreter` is the image's Python for the target, `plat` the one tag auditwheel repairs to.
     "3.14t linux-x86_64": {
