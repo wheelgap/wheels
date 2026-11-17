@@ -76,6 +76,9 @@ lots of outside contributions. Changes here are made by the maintainers, and eve
 
 - **A malicious sdist.** A wheel built from it is as malicious as the sdist. Installing the package from PyPI the
   normal way runs the same code. These wheels are only as trustworthy as the sdist PyPI serves.
+- **A compromise of a build toolchain.** Linux builds run in a pinned image (`quay.io/pypa/manylinux_2_28` or
+  `python:3.14-alpine`, by digest) with a pinned Rust (rustup-init checked by sha256, then Rust's own channel
+  manifest over TLS). Both builds of a pair use the same toolchain, so matching builds can't catch a bad one.
 - **A compromise of GitHub Actions or of a runner image.** Both builds of a pair run on the same runner image, so
   matching builds show that the build is deterministic there, not that two independent parties built it.
 - **A stale PyPI list.** The index is rebuilt hourly, so for the packages here a release uploaded in the last hour

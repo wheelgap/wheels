@@ -861,11 +861,8 @@ class Repair(unittest.TestCase):
                     self.assertIsNone(gap_wheels.repair(Path(tmp) / "x.whl", Path(tmp)))
 
 
-if __name__ == "__main__":
-    unittest.main()
 
-
-class Repair(unittest.TestCase):
+class RepairPlatform(unittest.TestCase):
     def test_repairs_to_exactly_the_targets_platform(self):
         calls = []
 
@@ -883,3 +880,6 @@ class Repair(unittest.TestCase):
         repair = next(c for c in calls if "repair" in c)
         self.assertEqual(repair[repair.index("--plat") + 1], "manylinux_2_28_x86_64")
         self.assertIn("--only-plat", repair)  # no wider tag, such as manylinux2014, added on top
+
+if __name__ == "__main__":
+    unittest.main()
