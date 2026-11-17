@@ -555,11 +555,21 @@ class Stage(unittest.TestCase):
         self.assertEqual(gap_wheels.metadata_licence(meta("License-Expression: Apache-2.0 OR MIT")), "Apache-2.0 OR MIT")
         for bad in (meta(), meta("License: MIT"), meta("License-Expression: LicenseRef-Proprietary"),
                     meta("License-Expression: MIT", "License-Expression: GPL-3.0-only"), b"not a zip",
+                    meta("License-Expression: MIT", "License: Proprietary"),
+                    meta("License-Expression: MIT", "Classifier: License :: Other/Proprietary License"),
                     zipped({"a.py": b""})):  # fmt: skip
             with self.subTest(bad=bad[:40]):
                 self.assertIsNone(gap_wheels.metadata_licence(bad))
 
-        # End to end: staged with the METADATA's licence; refused without one.
+        odd = io.BytesIO()
+        with zipfile.ZipFile(odd, "w") as z:
+            z.writestr("pkg-1.0.dist-info/METADATA", "License-Expression: MIT\n")
+        raw = bytearray(odd.getvalue())
+        at = raw.find(b"PK\x01\x02")  # the central directory entry: say it's deflate64, which zipfile can't read
+        raw[at + 10 : at + 12] = (9).to_bytes(2, "little")
+        raw[0 + 8 : 0 + 10] = (9).to_bytes(2, "little")
+        self.assertIsNone(gap_wheels.metadata_licence(bytes(raw)))  # refused, not raised
+                # End to end: staged with the METADATA's licence; refused without one.
         good = meta("License-Expression: MIT")
         none = meta()
         wheels = [verified(sha=hashlib.sha256(good).hexdigest()),

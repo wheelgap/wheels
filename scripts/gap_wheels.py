@@ -1592,16 +1592,15 @@ def metadata_licence(wheel: bytes) -> str | None:
         with zipfile.ZipFile(io.BytesIO(wheel)) as z:
             found = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/METADATA", n)]
             data = bounded(z, found[0], 1_000_000) if len(found) == 1 else None
-    except zipfile.BadZipFile:
+        headers = email.parser.HeaderParser().parsestr(data.decode("utf-8")) if data is not None else None
+    except Exception:  # noqa: BLE001  (an odd member, compression or encoding: no licence, never a crashed batch)
         return None
-    if data is None:
-        return None
-    try:
-        headers = email.parser.HeaderParser().parsestr(data.decode("utf-8"))
-    except UnicodeDecodeError:
+    if headers is None:
         return None
     exprs = headers.get_all("License-Expression") or []
-    if len(exprs) != 1:
+    # PEP 639: an expression replaces the License field and licence classifiers; METADATA with both is refused.
+    classifiers = [str(c) for c in headers.get_all("Classifier") or []]
+    if len(exprs) != 1 or headers.get_all("License") or any(c.startswith("License ::") for c in classifiers):
         return None
     expr = " ".join(str(exprs[0]).split())
     return expr if 0 < len(expr) <= 200 and osi_expression(expr) else None
