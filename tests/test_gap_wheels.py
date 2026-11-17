@@ -535,6 +535,52 @@ class Stage(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
+    def test_when_pypi_states_no_licence_the_wheels_own_metadata_must(self):
+        silent = {"license": None, "license_expression": None, "classifiers": ["Programming Language :: Python :: 3"],
+                  "requires_python": ">=3.10"}  # fmt: skip
+        self.assertTrue(gap_wheels.licence_unstated(silent))
+        self.assertIsNone(gap_wheels.stage_reason(verified(), silent, set()))  # deferred to the wheel's METADATA
+        for stated in ({"license": "Proprietary"}, {"classifiers": ["License :: Other/Proprietary License"]},
+                       {"license_expression": "LicenseRef-Mine"}):  # fmt: skip
+            with self.subTest(stated):
+                self.assertFalse(gap_wheels.licence_unstated(stated))
+                self.assertEqual(gap_wheels.stage_reason(verified(), stated, set()),
+                                 "PyPI names no OSI-approved licence for it")  # fmt: skip
+
+        def meta(*lines):
+            return zipped({"pkg/__init__.py": b"", "pkg-1.0.dist-info/METADATA":
+                           "Metadata-Version: 2.4\nName: pkg\n" + "".join(f"{x}\n" for x in lines)})  # fmt: skip
+
+        self.assertEqual(gap_wheels.metadata_licence(meta("License-Expression: MIT")), "MIT")
+        self.assertEqual(gap_wheels.metadata_licence(meta("License-Expression: Apache-2.0 OR MIT")), "Apache-2.0 OR MIT")
+        for bad in (meta(), meta("License: MIT"), meta("License-Expression: LicenseRef-Proprietary"),
+                    meta("License-Expression: MIT", "License-Expression: GPL-3.0-only"), b"not a zip",
+                    zipped({"a.py": b""})):  # fmt: skip
+            with self.subTest(bad=bad[:40]):
+                self.assertIsNone(gap_wheels.metadata_licence(bad))
+
+        # End to end: staged with the METADATA's licence; refused without one.
+        good = meta("License-Expression: MIT")
+        none = meta()
+        wheels = [verified(sha=hashlib.sha256(good).hexdigest()),
+                  verified(name="lz4", wheel="lz4-4.4.5-cp314-cp314-win_arm64.whl", sha=hashlib.sha256(none).hexdigest())]  # fmt: skip
+        archives = iter([zipped({WIN: good}), zipped({"lz4-4.4.5-cp314-cp314-win_arm64.whl": none})])
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "m.json").write_text(json.dumps({"date": "2026-11-17", "run": "R", "wheels": wheels}))
+            out = tmp / "out.txt"
+            args = gap_wheels.main.__globals__["argparse"].Namespace(
+                manifest=str(tmp / "m.json"), staged=str(tmp / "staged"), repo="r/r", optout=str(tmp / "none"),
+                summary=str(tmp / "summary.md"), github_output=str(out))  # fmt: skip
+            with mock.patch.object(gap_wheels, "pypi_info", return_value=silent), \
+                 mock.patch.object(gap_wheels, "missing_dlls", return_value=[]), \
+                 mock.patch.object(gap_wheels, "fetch_wheel", side_effect=lambda repo, rid: next(archives)):  # fmt: skip
+                gap_wheels.cmd_stage(args)
+            lines = dict(line.split("=", 1) for line in out.read_text().splitlines())
+            staged = json.loads(lines["staged"])
+            self.assertEqual([(w["wheel"], w["licence"]) for w in staged], [(WIN, "MIT")])
+            self.assertIn("neither PyPI nor its METADATA names an OSI-approved licence", (tmp / "summary.md").read_text())
+
     def test_only_wheels_with_their_tag_a_licence_and_no_opt_out(self):
         self.assertIsNone(gap_wheels.stage_reason(verified(), MIT, set()))
         linux = verified(wheel="lz4-4.4.5-cp314-cp314-linux_aarch64.whl", target="3.14 musl-aarch64")

@@ -1567,9 +1567,44 @@ def stage_reason(wheel: dict, info: dict | None, optout: set[str]) -> str | None
         return "the project opted out"
     if info is None:
         return "couldn't ask PyPI for the licence"
-    if licence(info) is None:
+    if licence(info) is None and not licence_unstated(info):
         return "PyPI names no OSI-approved licence for it"
-    return None
+    return None  # PyPI says nothing at all: the wheel's own METADATA must (cmd_stage, metadata_licence)
+
+
+def licence_unstated(info: dict) -> bool:
+    """Whether PyPI's metadata for the release says nothing about its licence: no expression, no licence classifier,
+    no legacy field. (PyPI's JSON can miss a PEP 639 License-Expression the upload's METADATA has: LightGBM 4.7.0.)"""
+    classifiers = info.get("classifiers") if isinstance(info.get("classifiers"), list) else []
+    return (
+        not (isinstance(info.get("license_expression"), str) and info["license_expression"].strip())
+        and not any(isinstance(c, str) and c.startswith("License ::") for c in classifiers)
+        and not (isinstance(info.get("license"), str) and info["license"].strip())
+    )
+
+
+def metadata_licence(wheel: bytes) -> str | None:
+    """The wheel's own METADATA License-Expression (PEP 639) when there's exactly one and every id in it is
+    OSI-approved (or the PSF licence); None otherwise. Its METADATA comes from the sdist PyPI publishes (the pair is
+    built from it and byte-identical), so it's the author's own declaration, as PyPI's metadata is. Only an SPDX
+    expression counts here, never a free-text License field."""
+    try:
+        with zipfile.ZipFile(io.BytesIO(wheel)) as z:
+            found = [n for n in z.namelist() if re.fullmatch(r"[^/]+\.dist-info/METADATA", n)]
+            data = bounded(z, found[0], 1_000_000) if len(found) == 1 else None
+    except zipfile.BadZipFile:
+        return None
+    if data is None:
+        return None
+    try:
+        headers = email.parser.HeaderParser().parsestr(data.decode("utf-8"))
+    except UnicodeDecodeError:
+        return None
+    exprs = headers.get_all("License-Expression") or []
+    if len(exprs) != 1:
+        return None
+    expr = " ".join(str(exprs[0]).split())
+    return expr if 0 < len(expr) <= 200 and osi_expression(expr) else None
 
 
 def take_wheel(repo: str, wheel: dict) -> tuple[bytes | None, str | None]:
@@ -1622,13 +1657,16 @@ def cmd_stage(args: argparse.Namespace) -> int:
                 data, reason = take_wheel(args.repo, wheel)
             except Exception as e:  # noqa: BLE001  (one unreadable wheel costs only itself, not the week's batch)
                 data, reason = None, f"couldn't read it ({type(e).__name__})"
+        stated = licence(info) if info is not None else None
+        if reason is None and stated is None and (stated := metadata_licence(data)) is None:
+            reason = "neither PyPI nor its METADATA names an OSI-approved licence"
         lines.append(f"| {wheel['name']} | {wheel['version']} | {wheel['target']} | {reason or 'staged'} |")
         if reason is not None:
             continue
         (out / wheel["wheel"]).write_bytes(data)
         staged.append({**{k: wheel[k] for k in ("name", "version", "target", "wheel", "sha256", "sdist",
                                                 "sdist_sha256", "builds")},
-                       "licence": licence(info), "requires_python": info.get("requires_python") or None,
+                       "licence": stated, "requires_python": info.get("requires_python") or None,
                        "verified": manifest.get("date"), "batch": manifest.get("run")})  # fmt: skip
     (out / "staged.json").write_text(json.dumps(staged, indent=1) + "\n", encoding="utf-8")
     matrix = [install_test_job(t) for t in sorted({w["target"] for w in staged})]

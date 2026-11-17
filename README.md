@@ -73,7 +73,8 @@ lots of outside contributions. Changes here are made by the maintainers, and eve
    (where its `$ORIGIN` RUNPATH or RPATH points) nor on the `manylinux_2_28` or `musllinux_1_2` list in auditwheel's
    policy, or need a glibc symbol version newer than 2.28 (read from each ELF file's dynamic section and version
    needs). Libraries a package loads by name at run time (`dlopen`) aren't checked. The release must name an
-   OSI-approved licence (or the PSF licence) on PyPI. Staging only reads the files, never runs them.
+   OSI-approved licence (or the PSF licence) on PyPI, or, when PyPI's metadata says nothing about a licence at
+   all, in a PEP 639 `License-Expression` in the wheel's own METADATA (which the sdist's build wrote). Staging only reads the files, never runs them.
 5. **Install test:** each staged wheel is installed and imported on a fresh runner of its platform. A wheel without
    an extension module, or on Windows one with a bundled `<dist>.libs/`, must also load every native library it ships
    outside `<dist>.libs/` (with `ctypes`, after importing the package), which proves the bundled DLLs are found. Linux wheels are
