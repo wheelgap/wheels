@@ -11,14 +11,18 @@ Each project page lists every file PyPI lists for that project (read from PyPI's
 files.pythonhosted.org with PyPI's sha256, requires-python, yanked and core-metadata) plus our gap wheels (linked to
 this repo's `gap-wheels` release with their sha256). The full list is what makes the index safe for uv: uv takes all of
 a package's files from the first index that has it, so a page with only our wheel would hide PyPI's other releases.
-A gap wheel drops out once PyPI has a wheel of the same release that installs where ours does. If PyPI can't be read
-for any project, or answers in an unexpected shape, nothing is written and it exits 1, so the deploy stops and the
-previous index stays up rather than a page with files missing.
+A gap wheel drops out once PyPI has a wheel of the same release that installs where ours does, or once the release is
+gone from PyPI; it is marked yanked when PyPI has yanked the release. If PyPI can't be read for any project, or answers
+in an unexpected shape, nothing is written and it exits 1, so the deploy stops and the previous index stays up rather
+than a page with files missing. With --omit-failing (for deploys a maintainer starts, such as a takedown) such a project
+is left out of the index instead, with a warning.
 """
 
 from __future__ import annotations
 
+import argparse
 import html
+import http.client
 import json
 import re
 import sys
@@ -90,8 +94,8 @@ def fetch_pypi(project: str) -> list[dict]:
                     raise PyPIError(f"{url}: answered from {r.geturl()} as {r.headers.get_content_type()}")
                 data = json.load(r)
             break
-        except (OSError, ValueError) as exc:
-            problem = f"{url}: {exc}"
+        except (OSError, ValueError, http.client.HTTPException) as exc:
+            problem = f"{url}: {exc!r}"
     else:
         raise PyPIError(problem)
     meta = data.get("meta") if isinstance(data, dict) else None
@@ -103,8 +107,8 @@ def fetch_pypi(project: str) -> list[dict]:
     return files
 
 
-def pypi_link(f: object) -> tuple[str, str]:
-    """(file name, anchor) for one file of PyPI's list, carrying what PyPI says about it. Raises PyPIError on any
+def pypi_link(f: object) -> tuple[str, str, str | None]:
+    """(file name, anchor, yank reason or None) for one file of PyPI's list, carrying what PyPI says about it. Raises PyPIError on any
     field that isn't the shape PEP 691 and PEP 714 give, rather than leave a file out (which would change what an
     installer sees)."""
     if not isinstance(f, dict):
@@ -138,13 +142,40 @@ def pypi_link(f: object) -> tuple[str, str]:
     elif meta is not False and meta is not None:
         raise PyPIError(f"{name}: unexpected core-metadata {meta!r:.80}")
     yanked = f.get("yanked", False)
+    reason: str | None = None
     if isinstance(yanked, str):
-        attrs += f' data-yanked="{e(yanked)}"'
+        reason = yanked
     elif yanked is True:
-        attrs += ' data-yanked=""'
+        reason = ""
     elif yanked is not False:
         raise PyPIError(f"{name}: unexpected yanked {yanked!r:.80}")
-    return name, f'<a href="{e(url)}#sha256={sha}"{attrs}>{e(name)}</a>'
+    if reason is not None:
+        attrs += f' data-yanked="{e(reason)}"'
+    return name, f'<a href="{e(url)}#sha256={sha}"{attrs}>{e(name)}</a>', reason
+
+
+SDIST = (".tar.gz", ".zip")
+
+
+def file_version(filename: str, project: str) -> str | None:
+    """The version in a wheel or sdist file name of `project` (lowercased, as written), or None."""
+    if parsed := wheel_tags(filename):
+        return parsed[1] if parsed[0] == project else None
+    for suffix in SDIST:
+        if filename.endswith(suffix):
+            name, _, version = filename[: -len(suffix)].rpartition("-")
+            return version.lower() if name and canonical(name) == project else None
+    return None
+
+
+def release_yank(version: str, project: str, files: list[tuple[str, str | None]]) -> tuple[bool, str | None]:
+    """(whether PyPI lists the release at all, its yank reason if every one of its files is yanked)."""
+    reasons = [reason for name, reason in files if file_version(name, project) == version]
+    if not reasons:
+        return False, None
+    if all(r is not None for r in reasons):
+        return True, next((r for r in reasons if r), "")
+    return True, None
 
 
 def wheel_tags(filename: str) -> tuple[str, str, set[tuple[str, str, str]]] | None:
@@ -216,17 +247,20 @@ def simple_page(title: str, links: list[str]) -> str:
 """
 
 
-def project_links(wheels: list[dict]) -> list[str]:
+def project_links(wheels: list[dict], yanked: dict[str, str] | None = None) -> list[str]:
     e = html.escape
     links = []
     for w in wheels:
         rp = w.get("requires_python")
         attr = f' data-requires-python="{e(rp)}"' if isinstance(rp, str) and rp.strip() else ""
+        if yanked and w["wheel"] in yanked:
+            attr += f' data-yanked="{e(yanked[w["wheel"]])}"'
         links.append(f'<a href="{e(RELEASE_URL + w["wheel"])}#sha256={w["sha256"]}"{attr}>{e(w["wheel"])}</a>')
     return links
 
 
-def human_page(by_project: dict[str, list[dict]], gone: set[str] | frozenset[str] = frozenset()) -> str:
+def human_page(by_project: dict[str, list[dict]], gone: dict[str, str] | None = None) -> str:
+    gone = gone or {}
     e = html.escape
     rows = []
     for project, wheels in by_project.items():
@@ -238,7 +272,7 @@ def human_page(by_project: dict[str, list[dict]], gone: set[str] | frozenset[str
                 f"<td>{e(str(w.get('version', '')))}</td><td>{e(str(w.get('target', '')))}</td>"
                 f"<td>{e(str(w.get('verified') or ''))}</td><td>{links}</td>"
                 f'<td><a href="{e(RELEASE_URL + w["wheel"])}">wheel</a></td>'
-                f"<td>{'withdrawn: PyPI has its own now' if w['wheel'] in gone else 'in the index'}</td></tr>"
+                f"<td>{e(gone.get(w['wheel'], 'in the index'))}</td></tr>"
             )
     count = sum(len(v) for v in by_project.values()) - len(gone)
     table = (
@@ -275,7 +309,7 @@ def human_page(by_project: dict[str, list[dict]], gone: set[str] | frozenset[str
       <p>With pip, add this index next to PyPI:</p>
       <pre><code>pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code></pre>
       <p>pip still gets everything else from PyPI. It only takes a wheel from here when PyPI doesn't have one for your machine.</p>
-      <p>With uv, add the index to <code>pyproject.toml</code> and point only the packages you need at it:</p>
+      <p>With uv, add the index to <code>pyproject.toml</code> and point only the packages you need at it. uv only applies <code>[tool.uv.sources]</code> to your direct dependencies, so if a package comes in through another one (tokenizers through transformers, say), add it to <code>dependencies</code> as well:</p>
       <pre><code>[[tool.uv.index]]
 name = "wheelgap"
 url = "{e(INDEX_URL)}"
@@ -283,8 +317,8 @@ explicit = true
 
 [tool.uv.sources]
 tokenizers = {{ index = "wheelgap" }}</code></pre>
-      <p>uv takes all of a package's files from one index, so each package's page here lists every file PyPI has for it too, with PyPI's own links and hashes, plus our wheel. Everything else still comes from PyPI. <code>uv pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code> works the same way.</p>
-      <p>The PyPI part of the list is refreshed every hour, so a release uploaded in the last hour may not show up yet for these packages. If PyPI can't be read, the index isn't updated at all, rather than going up with files missing.</p>
+      <p>uv takes all of a package's files from one index, so each package's page here lists every file PyPI has for it too, with PyPI's own links and hashes, plus our wheel. Everything else still comes from PyPI. <code>uv pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code> works too.</p>
+      <p>The PyPI part of the list is refreshed every hour, so with uv a release uploaded in the last hour may not show up yet for these packages. If PyPI can't be read, the index isn't updated at all, rather than going up with files missing. The pages are plain HTML, which has no upload times, so uv's <code>exclude-newer</code> finds no files for these packages here.</p>
       <p>Each wheel is for one release. If a newer release comes out without a wheel, pip or uv will try to build that one instead. Add <code>--prefer-binary</code> (pip) to keep using the wheel here. When the release ships its own wheel for the same platform, ours drops out of the index.</p>
     </section>
     <section>
@@ -312,26 +346,46 @@ tokenizers = {{ index = "wheelgap" }}</code></pre>
 """
 
 
-def build(index_path: Path, site: Path, fetch: Callable[[str], list] = fetch_pypi) -> int:
+def build(
+    index_path: Path, site: Path, fetch: Callable[[str], list] = fetch_pypi, *, omit_failing: bool = False
+) -> int:
+    """Write the site. A project PyPI can't be read for stops the build (nothing written, exit 1), or with
+    `omit_failing` is left out of the index (a warning, exit 0): for a deploy a maintainer started, such as a
+    takedown, which mustn't wait on PyPI."""
     data = json.loads(index_path.read_text(encoding="utf-8")) if index_path.is_file() else {"wheels": []}
     wheels = data.get("wheels") if isinstance(data, dict) and isinstance(data.get("wheels"), list) else []
     by_project = projects(wheels)
     pages: dict[str, list[str]] = {}
-    gone: set[str] = set()
-    try:
-        for project in by_project:
-            listed = dict(pypi_link(f) for f in fetch(project))
-            ours = {w["wheel"]: w for w in by_project[project]}
-            gone |= {name for name in ours if withdrawn(name, set(listed))}
-            kept = [w for name, w in ours.items() if name not in gone]
-            ours_links = dict(zip((w["wheel"] for w in kept), project_links(kept), strict=True))
-            pages[project] = [link for _, link in sorted({**listed, **ours_links}.items())]
-    except PyPIError as exc:
-        print(f"gap wheels: PyPI's list can't be used, nothing written: {exc}", file=sys.stderr)
-        return 1
+    gone: dict[str, str] = {}
+    for project in by_project:
+        try:
+            files = [pypi_link(f) for f in fetch(project)]
+        except PyPIError as exc:
+            if not omit_failing:
+                print(f"gap wheels: PyPI's list can't be used, nothing written: {exc}", file=sys.stderr)
+                return 1
+            print(f"::warning::gap wheels: {project} left out of the index, PyPI's list can't be used: {exc}")
+            continue
+        listed = {name: link for name, link, _ in files}
+        names_yanks = [(name, reason) for name, _, reason in files]
+        yanked: dict[str, str] = {}
+        kept = []
+        for w in by_project[project]:
+            mine = wheel_tags(w["wheel"])
+            on_pypi, reason = release_yank(mine[1], project, names_yanks) if mine else (False, None)
+            if not on_pypi:
+                gone[w["wheel"]] = "withdrawn: the release isn't on PyPI"
+            elif withdrawn(w["wheel"], set(listed)):
+                gone[w["wheel"]] = "withdrawn: PyPI has its own now"
+            else:
+                kept.append(w)
+                if reason is not None:
+                    yanked[w["wheel"]] = reason
+        ours_links = dict(zip((w["wheel"] for w in kept), project_links(kept, yanked), strict=True))
+        pages[project] = [link for _, link in sorted({**listed, **ours_links}.items())]
     simple = site / "simple"
     simple.mkdir(parents=True, exist_ok=True)
-    root_links = [f'<a href="{p}/">{p}</a>' for p in by_project]
+    root_links = [f'<a href="{p}/">{p}</a>' for p in pages]
     (simple / "index.html").write_text(simple_page("Simple index", root_links), encoding="utf-8")
     for project, links in pages.items():
         (simple / project).mkdir(exist_ok=True)
@@ -339,11 +393,20 @@ def build(index_path: Path, site: Path, fetch: Callable[[str], list] = fetch_pyp
     (site / "index.html").write_text(human_page(by_project, gone), encoding="utf-8")
     (site / "data").mkdir(exist_ok=True)
     (site / "data" / "gap-wheels.json").write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
-    listed_count = sum(len(v) for v in by_project.values()) - len(gone)
-    print(f"gap wheels: {listed_count} wheels of {len(by_project)} projects listed, {len(gone)} withdrawn")
-    for name in sorted(gone):
-        print(f"  withdrawn, PyPI has its own: {name}")
+    listed_count = sum(1 for p in pages for w in by_project[p] if w["wheel"] not in gone)
+    print(f"gap wheels: {listed_count} wheels of {len(pages)} projects listed, {len(gone)} withdrawn")
+    for name, why in sorted(gone.items()):
+        print(f"  {why}: {name}")
     return 0
 
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("index", type=Path)
+    parser.add_argument("site", type=Path)
+    parser.add_argument("--omit-failing", action="store_true", help="leave out projects PyPI can't be read for")
+    args = parser.parse_args(argv)
+    return build(args.index, args.site, omit_failing=args.omit_failing)
+
 if __name__ == "__main__":
-    sys.exit(build(Path(sys.argv[1]), Path(sys.argv[2])))
+    sys.exit(main())

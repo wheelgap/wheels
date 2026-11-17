@@ -5,8 +5,8 @@ name: Pages
 # made with the workflow's token doesn't trigger workflows). Runs only our own code.
 #
 # Each project page also lists PyPI's own files for that project (so uv, which takes a package from one index, sees
-# every release), so it runs hourly to pick up new uploads. If PyPI can't be read the build step fails and nothing is
-# deployed: the previous index stays up rather than one with files missing.
+# every release), so it runs hourly to pick up new uploads. If PyPI can't be read the hourly build fails and nothing is
+# deployed: the previous index stays up rather than one with files missing, and the failed run emails the maintainers.
 
 on:
   push:
@@ -40,7 +40,16 @@ jobs:
           persist-credentials: false
       - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Build the index and page
-        run: python3 scripts/build_gap_index.py data/gap-wheels.json _site
+        # The hourly run keeps the last good index when PyPI can't be read. A push or a manual run (a takedown, an
+        # opt-out) deploys anyway, leaving out any project PyPI can't be read for, so removals never wait on PyPI.
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" = schedule ]; then
+            python3 scripts/build_gap_index.py data/gap-wheels.json _site
+          else
+            python3 scripts/build_gap_index.py --omit-failing data/gap-wheels.json _site
+          fi
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: _site
