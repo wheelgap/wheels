@@ -35,11 +35,13 @@ def no_network(project):
 
 
 class Index(unittest.TestCase):
-    def build(self, wheels, pypi=None, expect=0, sdists=True, **kw):
+    def build(self, wheels, pypi=None, expect=0, sdists=True, requests=None, **kw):
         """Build with a fake PyPI. Unless `sdists` is false, PyPI also lists each wheel's release (its sdist), as it
-        does for every release we build from."""
+        does for every release we build from. `requests` is written as data/gap-wheel-requests.json."""
         tmp = Path(tempfile.mkdtemp())
         (tmp / "gap-wheels.json").write_text(json.dumps({"schema": 1, "wheels": wheels}))
+        if requests is not None:
+            (tmp / "gap-wheel-requests.json").write_text(json.dumps(requests))
         self.fetched = []
 
         def fetch(project):
@@ -273,6 +275,47 @@ class Index(unittest.TestCase):
         self.assertIn(f"gap-wheels/{ours}", (site / "simple/tiktoken/index.html").read_text())  # spelled differently
         site = self.build([wheel()], {"tiktoken": [pypi_file("tiktoken-0.14.0-cp314-abi3-win_arm64.whl")]})
         self.assertNotIn("releases/download", (site / "simple/tiktoken/index.html").read_text())  # same-version abi3
+
+
+class Requests(Index):
+    LGBM = "lightgbm-4.7.0-cp314-cp314-win_arm64.whl"
+
+    def test_a_requested_package_names_who_asked_and_has_an_anchor(self):
+        wheels = [wheel(name="lightgbm", file=self.LGBM, version="4.7.0"),
+                  wheel(name="lightgbm", file="lightgbm-4.7.0-cp314-cp314t-win_arm64.whl", version="4.7.0",
+                        target="3.14t win-arm64"),
+                  wheel()]  # fmt: skip
+        asked = {"LightGBM": {"by": "u/TumbleweedNo8956", "url": "https://www.reddit.com/user/TumbleweedNo8956/"}}
+        page = (self.build(wheels, requests=asked) / "index.html").read_text()
+        self.assertIn('<tr id="lightgbm">', page)
+        self.assertEqual(page.count('id="lightgbm"'), 1)  # one anchor per package, on its first row
+        self.assertIn('<tr id="tiktoken">', page)
+        self.assertEqual(page.count(
+            'Built at the request of <a href="https://www.reddit.com/user/TumbleweedNo8956/">u/TumbleweedNo8956</a>'), 2)
+        self.assertNotIn("Built at the request of", page.split('<tr id="tiktoken">')[1])
+
+    def test_requests_it_doesnt_trust_are_left_out(self):
+        for bad in ({"lightgbm": {"by": "<b>x</b>", "url": "https://github.com/x"}},
+                    {"lightgbm": {"by": "x", "url": "https://evil.example/x"}},
+                    {"lightgbm": {"by": "x", "url": "javascript:alert(1)"}},
+                    {"lightgbm": {"by": "x"}}, {"lightgbm": "x"}, ["lightgbm"], "nonsense"):  # fmt: skip
+            with self.subTest(bad=bad):
+                page = (self.build([wheel(name="lightgbm", file=self.LGBM, version="4.7.0")], requests=bad)
+                        / "index.html").read_text()
+                self.assertNotIn("Built at the request of", page)
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "r.json").write_text("{not json")
+        self.assertEqual(build_gap_index.read_requests(tmp / "r.json"), {})
+        self.assertEqual(build_gap_index.read_requests(tmp / "missing.json"), {})
+
+    def test_a_py3_none_wheel_for_the_platform_replaces_ours(self):
+        ours = ("cp314", "cp314", "win_arm64")
+        self.assertTrue(build_gap_index.covers(("py3", "none", "win_arm64"), ours))
+        self.assertTrue(build_gap_index.covers(("py3", "none", "win_arm64"), ("cp314", "cp314t", "win_arm64")))
+        self.assertFalse(build_gap_index.covers(("py3", "none", "win_amd64"), ours))
+        self.assertFalse(build_gap_index.covers(("py2", "none", "win_arm64"), ours))
+        self.assertTrue(build_gap_index.covers(("py3", "none", "manylinux_2_17_x86_64"),
+                                               ("cp314", "cp314t", "manylinux_2_28_x86_64")))  # fmt: skip
 
 
 class FetchPyPI(unittest.TestCase):

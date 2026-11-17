@@ -484,7 +484,7 @@ class Rotation(unittest.TestCase):
         self.assertEqual(names(0), names(len(everyone)))  # wraps around
 
     def test_members_too_big_to_list_still_leave_the_result(self):
-        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None):
+        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None, tag=None):
             members.update({f"pkg/f{i}.py": "a" * 64 for i in range(gap_wheels.MAX_MEMBERS + 1)})
             return {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
 
@@ -822,7 +822,7 @@ class KeepTheWheel(unittest.TestCase):
     def test_build_passes_the_wheel_dir_through(self):
         seen = {}
 
-        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None):
+        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None, tag=None):
             seen["keep"] = keep
             return {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
 
@@ -837,10 +837,11 @@ class KeepTheWheel(unittest.TestCase):
         self.assertEqual(seen["keep"], Path(tmp) / "wheel")
 
 
-def tiny_wheel(folder, body):
-    """A pure wheel pip installs offline: demo-1.0, one module whose import runs `body`."""
+def tiny_wheel(folder, body, extra=None):
+    """A pure wheel pip installs offline: demo-1.0, one module whose import runs `body`, plus `extra` files."""
     path = folder / "demo-1.0-py3-none-any.whl"
-    files = {"demo.py": body, "demo-1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n",
+    files = {"demo.py": body, **(extra or {}),
+             "demo-1.0.dist-info/METADATA": "Metadata-Version: 2.1\nName: demo\nVersion: 1.0\n",
              "demo-1.0.dist-info/WHEEL": "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"}  # fmt: skip
     record = "".join(f"{n},,\n" for n in files) + "demo-1.0.dist-info/RECORD,,\n"
     with zipfile.ZipFile(path, "w") as z:
@@ -860,6 +861,15 @@ class InstallAndImport(unittest.TestCase):
             bad = tiny_wheel(tmp / "bad", "raise RuntimeError('broken on import')\n")
             self.assertIsNone(gap_wheels.install_and_import(ok, "3.14 win-arm64", tmp / "w1"))
             self.assertEqual(gap_wheels.install_and_import(bad, "3.14 win-arm64", tmp / "w2"), "the top import check failed")
+
+    def test_a_native_library_that_wont_load_fails_the_test(self):
+        # A wheel with no extension module must load every native library it ships, not just import cleanly.
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / "lib").mkdir()
+            broken = tiny_wheel(tmp / "lib", "VALUE = 1\n", {"demo_libs/libdemo.so": "not a library"})
+            self.assertEqual(gap_wheels.install_and_import(broken, "3.14 win-arm64", tmp / "w3"),
+                             "its native libraries didn't load")
 
 
 def pe(dlls, delay=()):
@@ -1316,3 +1326,127 @@ class RepairPlatform(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NativeWithoutExtensions(unittest.TestCase):
+    """LightGBM's kind of wheel: no extension module, a DLL loaded with ctypes, tagged py3-none-<platform>."""
+
+    def test_a_native_py3_none_build_is_a_pair(self):
+        builds = {"results": [
+            row("lightgbm", "4.7.0", "3.14 win-arm64", extensions=0, wheel="py3-none-win_arm64"),
+            row("lightgbm", "4.7.0", "3.14t win-arm64", extensions=0, wheel="py3-none-win_arm64", gil=None),
+            row("ninja", "1.0", "3.14 musl-aarch64", extensions=0, wheel="py3-none-musllinux_1_2_aarch64"),
+            row("pure", "1.0", "3.14 win-arm64", extensions=0, wheel="py3-none-any"),
+            row("x64", "1.0", "3.14 win-arm64", extensions=0, wheel="py3-none-win_amd64"),
+            row("both", "1.0", "3.14 win-arm64", extensions=0, wheel="py3-none-win_arm64.win_amd64"),
+            row("abi", "1.0", "3.14 win-arm64", extensions=0, wheel="cp39-abi3-win_arm64"),
+            row("notag", "1.0", "3.14 win-arm64", extensions=0),
+            row("noimport", "1.0", "3.14 win-arm64", extensions=0, wheel="py3-none-win_arm64", **{"import": "failed"}),
+        ]}  # fmt: skip
+        pairs = {(p["name"], p["target"]) for p in gap_wheels.clean_pairs(builds)}
+        self.assertEqual(pairs, {("lightgbm", "3.14 win-arm64"), ("lightgbm", "3.14t win-arm64"),
+                                 ("ninja", "3.14 musl-aarch64")})  # fmt: skip
+
+    def test_which_wheel_files_get_retagged(self):
+        self.assertTrue(gap_wheels.pure_platform_tag("lightgbm-4.7.0-py3-none-win_arm64.whl"))
+        self.assertTrue(gap_wheels.pure_platform_tag("x-1.0-1-py2.py3-none-musllinux_1_2_aarch64.whl"))
+        self.assertFalse(gap_wheels.pure_platform_tag("x-1.0-py3-none-any.whl"))
+        self.assertFalse(gap_wheels.pure_platform_tag("x-1.0-cp314-cp314-win_arm64.whl"))
+        self.assertFalse(gap_wheels.pure_platform_tag("x-1.0-cp39-abi3-win_arm64.whl"))
+
+    def test_the_vc_runtime_bundled_by_delvewheel_counts_and_nothing_else_does(self):
+        lib = pe(["MSVCP140-13f01359eefd96cadb3a8ee645921e00.dll", "vcomp140-49e628b226e7b7d51c9b7e9d11d85efe.dll",
+                  "kernel32.dll"])  # fmt: skip
+        runtime = pe(["kernel32.dll"])
+        ok = whl({"lightgbm/bin/lib_lightgbm.dll": lib,
+                  "lightgbm.libs/msvcp140-13f01359eefd96cadb3a8ee645921e00.dll": runtime,
+                  "lightgbm.libs/vcomp140-49e628b226e7b7d51c9b7e9d11d85efe.dll": runtime})  # fmt: skip
+        self.assertEqual(gap_wheels.missing_dlls(ok), [])
+        ssl = pe(["libssl-0123456789abcdef0123456789abcdef.dll"])
+        third_party = whl({"pkg/_ext.pyd": ssl, "pkg.libs/libssl-0123456789abcdef0123456789abcdef.dll": runtime})
+        self.assertEqual(gap_wheels.missing_dlls(third_party), ["libssl-0123456789abcdef0123456789abcdef.dll"])
+        plain = whl({"pkg/_ext.pyd": pe(["msvcp140.dll"]), "pkg.libs/msvcp140.dll": runtime})  # not mangled
+        self.assertEqual(gap_wheels.missing_dlls(plain), ["msvcp140.dll"])
+        nested = whl({"pkg/_ext.pyd": pe(["msvcp140-13f01359eefd96cadb3a8ee645921e00.dll"]),
+                      "pkg/sub.libs/msvcp140-13f01359eefd96cadb3a8ee645921e00.dll": runtime})  # fmt: skip
+        self.assertEqual(gap_wheels.missing_dlls(nested), ["msvcp140-13f01359eefd96cadb3a8ee645921e00.dll"])
+        exe = whl({"pkg/bin/tool.exe": pe(["msvcp140.dll"])})  # an executable's DLLs are checked too
+        self.assertEqual(gap_wheels.missing_dlls(exe), ["msvcp140.dll"])
+
+    def test_native_libraries_are_the_files_to_load(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            w = Path(tmp) / "x.whl"
+            w.write_bytes(whl({"lightgbm/__init__.py": b"", "lightgbm/bin/lib_lightgbm.dll": b"",
+                               "lightgbm.libs/vcomp140-49e628b226e7b7d51c9b7e9d11d85efe.dll": b"",
+                               "tool/libfoo.so.1.2": b"", "tool/libbar.so": b"", "tool/notes.so.txt": b"",
+                               "x-1.0.data/scripts/odd.dll": b""}, dist="x-1.0"))  # fmt: skip
+            self.assertEqual(gap_wheels.native_libraries(w), [
+                "lightgbm.libs/vcomp140-49e628b226e7b7d51c9b7e9d11d85efe.dll", "lightgbm/bin/lib_lightgbm.dll",
+                "tool/libbar.so", "tool/libfoo.so.1.2"])  # fmt: skip
+
+    def test_finish_bundles_only_the_vc_runtime_and_retags_py3_none(self):
+        built = Path("lightgbm-4.7.0-py3-none-win_arm64.whl")
+        bundled = Path("bundled/lightgbm-4.7.0-py3-none-win_arm64.whl")
+        final = Path("retagged/lightgbm-4.7.0-cp314-cp314-win_arm64.whl")
+        work = Path("work")
+        with mock.patch.object(gap_wheels.sys, "platform", "win32"), mock.patch.object(gap_wheels.os, "name", "nt"), \
+             mock.patch.object(Path, "read_bytes", return_value=b""), \
+             mock.patch.object(gap_wheels, "sha256", return_value="0" * 64), \
+             mock.patch.object(gap_wheels, "missing_dlls", return_value=["msvcp140.dll", "vcomp140.dll"]), \
+             mock.patch.object(gap_wheels, "bundle_dlls", return_value=bundled) as bundle, \
+             mock.patch.object(gap_wheels, "retag", return_value=final) as tag:  # fmt: skip
+            self.assertEqual(gap_wheels.finish_wheel(built, work, None, "cp314-cp314-win_arm64"), final)
+            bundle.assert_called_once_with(built, work)
+            tag.assert_called_once_with(bundled, work, "cp314-cp314-win_arm64")
+        with mock.patch.object(gap_wheels.sys, "platform", "win32"), mock.patch.object(gap_wheels.os, "name", "nt"), \
+             mock.patch.object(Path, "read_bytes", return_value=b""), \
+             mock.patch.object(gap_wheels, "missing_dlls", return_value=["msvcp140.dll", "libssl-3.dll"]), \
+             mock.patch.object(gap_wheels, "bundle_dlls", side_effect=AssertionError("bundled a third-party DLL")), \
+             mock.patch.object(gap_wheels, "retag", return_value=final):  # fmt: skip
+            # Not bundled: stage refuses it for libssl-3.dll.
+            self.assertEqual(gap_wheels.finish_wheel(built, work, None, "cp314-cp314-win_arm64"), final)
+        ext = Path("tiktoken-0.14.0-cp314-cp314-win_arm64.whl")
+        with mock.patch.object(gap_wheels.sys, "platform", "win32"), mock.patch.object(gap_wheels.os, "name", "nt"), \
+             mock.patch.object(Path, "read_bytes", return_value=b""), \
+             mock.patch.object(gap_wheels, "missing_dlls", return_value=[]), \
+             mock.patch.object(gap_wheels, "bundle_dlls", side_effect=AssertionError("nothing to bundle")), \
+             mock.patch.object(gap_wheels, "retag", side_effect=AssertionError("already exact")):  # fmt: skip
+            self.assertEqual(gap_wheels.finish_wheel(ext, work, None, "cp314-cp314-win_arm64"), ext)
+        with mock.patch.object(gap_wheels.sys, "platform", "win32"), mock.patch.object(gap_wheels.os, "name", "nt"), \
+             mock.patch.object(Path, "read_bytes", return_value=b""), \
+             mock.patch.object(gap_wheels, "sha256", return_value="0" * 64), \
+             mock.patch.object(gap_wheels, "missing_dlls", return_value=["vcomp140.dll"]), \
+             mock.patch.object(gap_wheels, "bundle_dlls", return_value=None):  # fmt: skip
+            self.assertIsNone(gap_wheels.finish_wheel(built, work, None, "cp314-cp314-win_arm64"))  # no result
+
+    def test_retag_runs_the_pinned_wheel_tool_and_checks_the_tag(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            src = work / "lightgbm-4.7.0-py3-none-win_arm64.whl"
+            src.write_bytes(b"w")
+
+            def fake_run(cmd, **kw):
+                self.assertEqual(cmd[1:4], ["-m", "wheel", "tags"])
+                self.assertEqual(cmd[4:10], ["--python-tag", "cp314", "--abi-tag", "cp314t", "--platform-tag",
+                                             "win_arm64"])  # fmt: skip
+                self.assertEqual(kw["env"]["SOURCE_DATE_EPOCH"], "1700000000")
+                copy = Path(cmd[-1])
+                copy.rename(copy.with_name("lightgbm-4.7.0-cp314-cp314t-win_arm64.whl"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            with mock.patch.object(gap_wheels, "tool_venv", return_value=work / "bin") as venv, \
+                 mock.patch.object(gap_wheels.subprocess, "run", side_effect=fake_run):  # fmt: skip
+                got = gap_wheels.retag(src, work, "cp314-cp314t-win_arm64")
+            venv.assert_called_once_with(work, "retag-tools", ("wheel==0.48.0", "packaging==26.3"))
+            self.assertEqual(got.name, "lightgbm-4.7.0-cp314-cp314t-win_arm64.whl")
+
+            def wrong_tag(cmd, **kw):
+                Path(cmd[-1]).rename(Path(cmd[-1]).with_name("lightgbm-4.7.0-cp314-cp314-win_amd64.whl"))
+                return subprocess.CompletedProcess(cmd, 0, "", "")
+
+            shutil_dir = work / "retagged"
+            for f in shutil_dir.glob("*"):
+                f.unlink()
+            with mock.patch.object(gap_wheels, "tool_venv", return_value=work / "bin"), \
+                 mock.patch.object(gap_wheels.subprocess, "run", side_effect=wrong_tag):  # fmt: skip
+                self.assertIsNone(gap_wheels.retag(src, work, "cp314-cp314t-win_arm64"))

@@ -51,20 +51,28 @@ lots of outside contributions. Changes here are made by the maintainers, and eve
 ## How a wheel gets here
 
 1. **Pick:** the tracker's build lab records which releases build cleanly from their sdist where PyPI has no wheel
-   (`data/builds.json` there). The weekly batch (`.github/workflows/gap-wheels.yml`) plans pairs from that list.
+   (`data/builds.json` there). The weekly batch (`.github/workflows/gap-wheels.yml`) plans pairs from that list: a
+   build with a compiled extension module, or one whose wheel carries native code without one (tagged
+   `py3-none-<platform>`, such as LightGBM's DLL, which it loads with `ctypes`).
 2. **Build twice:** each pair is built in two separate workflow runs (`gap-wheel-build.yml`), from the sdist PyPI
    publishes (its sha256 is checked against PyPI's), unpacked to a fixed path with a fixed `SOURCE_DATE_EPOCH`. On
-   Linux the wheel is repaired with a pinned `auditwheel` first.
+   Linux the wheel is repaired with a pinned `auditwheel` first. On Windows, if its binaries import VC++ runtime DLLs
+   a user's machine may lack (`msvcp140.dll`, `vcomp140.dll`…), a pinned `delvewheel` bundles those, and only those,
+   into `<dist>.libs/` under names carrying their hash (Microsoft lists them as redistributable). A `py3-none-<platform>`
+   wheel is retagged with a pinned `wheel` to the target's one exact tag, so it installs only on the Python it was
+   built and tested on. All of this happens before hashing, in both builds.
 3. **Verify:** a trusted job compares the two results. A pair counts only if both wheels are byte-identical and pip
    installs the wheel without compiling anything.
 4. **Stage:** the trusted job takes the wheel file from a build run only if its sha256 is the verified one, and only
    for the one exact tag the target allows. The wheel can't need a DLL a user's machine may lack (on Windows, read
-   from each `.pyd`/`.dll`'s imports) or, on Linux, link against a library that is neither bundled in the wheel
+   from each `.pyd`/`.dll`/`.exe`'s imports; only the VC++ runtime counts as bundled from `<dist>.libs/`, and only
+   under a hashed name, which no other copy on the system can answer to) or, on Linux, link against a library that is neither bundled in the wheel
    (where its `$ORIGIN` RUNPATH or RPATH points) nor on the `manylinux_2_28` or `musllinux_1_2` list in auditwheel's
    policy, or need a glibc symbol version newer than 2.28 (read from each ELF file's dynamic section and version
    needs). Libraries a package loads by name at run time (`dlopen`) aren't checked. The release must name an
    OSI-approved licence (or the PSF licence) on PyPI. Staging only reads the files, never runs them.
-5. **Install test:** each staged wheel is installed and imported on a fresh runner of its platform. Linux wheels are
+5. **Install test:** each staged wheel is installed and imported on a fresh runner of its platform. A wheel without
+   an extension module must also load every native library it ships (with `ctypes`, after importing the package). Linux wheels are
    tested in a minimal container of their libc, pinned by digest, with the target's exact CPython (`python:3.14-alpine`,
    `python:3.15-slim-trixie`, and `debian:trixie-slim` with a pinned, sha256-checked python-build-standalone 3.14t),
    not on GitHub's runner image, which has many libraries a user's system doesn't.

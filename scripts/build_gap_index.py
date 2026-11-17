@@ -3,8 +3,9 @@
     python3 scripts/build_gap_index.py data/gap-wheels.json _site
 
 Writes <site>/simple/index.html (every project), <site>/simple/<project>/index.html, <site>/index.html (what the index
-is, how to use it with pip and uv, how the wheels are made and how a project opts out) and <site>/data/gap-wheels.json
-(the transparency record). gap_wheels.py publish writes the JSON. Plain HTML, no JavaScript. The site is
+is, how to use it with pip and uv, how the wheels are made and how a project opts out; each package's rows have an
+anchor, #<project>, and say who asked for it when data/gap-wheel-requests.json names someone) and
+<site>/data/gap-wheels.json (the transparency record). gap_wheels.py publish writes the JSON. Plain HTML, no JavaScript. The site is
 wheelgap.github.io/wheels/; it shares wheelgap.github.io with the tracker, whose stylesheet it uses.
 
 Each project page lists every file PyPI lists for that project (read from PyPI's JSON simple API, linked to
@@ -218,8 +219,8 @@ def platform_covers(theirs: str, ours: str) -> bool:
 def covers(theirs: tuple[str, str, str], ours: tuple[str, str, str]) -> bool:
     """Whether a wheel tagged `theirs` installs everywhere one tagged `ours` (a CPython wheel, cpXY-cpXY[t]-PLAT) does.
     Only cases that are certain count: the same Python and ABI on a platform that covers ours (the same tag, or an
-    older manylinux or musllinux of the same architecture), abi3 from an older or equal CPython for a
-    non-free-threaded ABI, and pure Python wheels. Anything else keeps our wheel."""
+    older manylinux or musllinux of the same architecture), py3-none on such a platform, abi3 from an older or equal
+    CPython for a non-free-threaded ABI, and pure Python wheels. Anything else keeps our wheel."""
     if theirs == ours:
         return True
     py, abi, plat = ours
@@ -234,6 +235,8 @@ def covers(theirs: tuple[str, str, str], ours: tuple[str, str, str]) -> bool:
         return False
     if (tpy, tabi) == (py, abi):
         return True
+    if tabi == "none":  # native code without a Python ABI (py3-none-win_arm64): every CPython of that major takes it
+        return tpy in (f"py{major}", f"py{major}{minor}", py)
     if tabi == "abi3" and abi == py:
         tm = CPYTHON.fullmatch(tpy)
         return tm is not None and int(tm.group(1)) == major and int(tm.group(2)) <= minor
@@ -284,16 +287,54 @@ def project_links(wheels: list[dict], yanked: dict[str, str] | None = None) -> l
     return links
 
 
-def human_page(by_project: dict[str, list[dict]], gone: dict[str, str] | None = None) -> str:
+# Who asked for a package's gap wheels, shown on its rows: data/gap-wheel-requests.json, {"project": {"by": "u/name",
+# "url": "https://www.reddit.com/user/name/"}}. A maintainer adds an entry when building on someone's public request.
+# Only a short handle and a link to a Reddit or GitHub profile are shown; anything else is left out.
+REQUEST_BY = re.compile(r"(?:u/|@)?[A-Za-z0-9_-]{1,39}", re.ASCII)
+REQUEST_URL = re.compile(r"https://(?:www\.reddit\.com/user|github\.com)/[A-Za-z0-9_-]{1,39}/?", re.ASCII)
+
+
+def read_requests(path: Path) -> dict[str, dict[str, str]]:
+    """The well-formed entries of data/gap-wheel-requests.json, by canonical project name ({} if there's no file)."""
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    out = {}
+    if isinstance(raw, dict):
+        for project, r in raw.items():
+            if (
+                isinstance(project, str)
+                and isinstance(r, dict)
+                and isinstance(r.get("by"), str)
+                and REQUEST_BY.fullmatch(r["by"])
+                and isinstance(r.get("url"), str)
+                and REQUEST_URL.fullmatch(r["url"])
+            ):
+                out[canonical(project)] = {"by": r["by"], "url": r["url"]}
+    return out
+
+
+def human_page(
+    by_project: dict[str, list[dict]],
+    gone: dict[str, str] | None = None,
+    requests: dict[str, dict[str, str]] | None = None,
+) -> str:
     gone = gone or {}
+    requests = requests or {}
     e = html.escape
     rows = []
     for project, wheels in by_project.items():
-        for w in wheels:
+        asked = requests.get(canonical(project))
+        note = (
+            f'<br><small>Built at the request of <a href="{e(asked["url"])}">{e(asked["by"])}</a></small>' if asked else ""
+        )
+        for n, w in enumerate(wheels):
             builds = [u for u in w.get("builds") or [] if isinstance(u, str) and u.startswith("https://github.com/")]
             links = ", ".join(f'<a href="{e(u)}">build {n}</a>' for n, u in enumerate(builds, 1))
+            anchor = f' id="{e(project)}"' if n == 0 else ""
             rows.append(
-                f'          <tr><td><a href="{e(TRACKER)}p/{e(project)}/">{e(w["name"])}</a></td>'
+                f'          <tr{anchor}><td><a href="{e(TRACKER)}p/{e(project)}/">{e(w["name"])}</a>{note}</td>'
                 f"<td>{e(str(w.get('version', '')))}</td><td>{e(str(w.get('target', '')))}</td>"
                 f"<td>{e(str(w.get('verified') or ''))}</td><td>{links}</td>"
                 f'<td><a href="{e(RELEASE_URL + w["wheel"])}">wheel</a></td>'
@@ -419,7 +460,8 @@ def build(
     for project, links in pages.items():
         (simple / project).mkdir(exist_ok=True)
         (simple / project / "index.html").write_text(simple_page(f"Links for {project}", links), encoding="utf-8")
-    (site / "index.html").write_text(human_page(by_project, gone), encoding="utf-8")
+    requests = read_requests(index_path.parent / "gap-wheel-requests.json")
+    (site / "index.html").write_text(human_page(by_project, gone, requests), encoding="utf-8")
     (site / "data").mkdir(exist_ok=True)
     (site / "data" / "gap-wheels.json").write_text(json.dumps(data, indent=1) + "\n", encoding="utf-8")
     listed_count = sum(1 for p in pages for w in by_project[p] if w["wheel"] not in gone)
