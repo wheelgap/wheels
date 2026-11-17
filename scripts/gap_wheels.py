@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import email.parser
 import hashlib
 import io
 import json
@@ -372,8 +373,18 @@ def finish_wheel(
         bundled = bundle_dlls(wheels[0], work)
         if bundled is None:
             return None
+        if added := sorted(init_files(bundled) - init_files(wheels[0])):
+            # delvewheel adds an __init__.py to any top-level folder without one: a namespace package (or a stray
+            # folder) would become a regular package and could break other distributions sharing it.
+            print(f"gap_wheels: bundling added {', '.join(added[:5])}; not published", file=sys.stderr)
+            return None
         wheels = [bundled]
     return wheels[0]
+
+
+def init_files(wheel: Path) -> set[str]:
+    with zipfile.ZipFile(wheel) as z:
+        return {n for n in z.namelist() if n.rpartition("/")[2] == "__init__.py"}
 
 
 def namespace_folders(wheel: Path) -> list[str]:
@@ -1454,7 +1465,8 @@ def wheel_file_tags(wheel: bytes) -> list[str] | None:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    return [line.split(":", 1)[1].strip() for line in text.splitlines() if line.startswith("Tag:")]
+    # As installers read it: email headers, so case-insensitive names and folded lines.
+    return [t.strip() for t in email.parser.HeaderParser().parsestr(text).get_all("Tag") or []]
 
 
 def wheel_tags_problem(wheel: bytes, tag: str | None) -> str | None:

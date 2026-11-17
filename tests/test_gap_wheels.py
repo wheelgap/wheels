@@ -1400,12 +1400,13 @@ class NativeWithoutExtensions(unittest.TestCase):
                 self.assertEqual(gap_wheels.native_libraries(w), ["tool/libbar.so", "tool/libfoo.so.1.2"])
             self.assertTrue(gap_wheels.has_libs_folder(w))
 
-    def finish(self, built, missing, platform_pattern=r"win_arm64", spaces=(), *, bundle, retag):
+    def finish(self, built, missing, platform_pattern=r"win_arm64", spaces=(), inits=(set(), set()), *, bundle, retag):
         work = Path("work")
         with mock.patch.object(gap_wheels.sys, "platform", "win32"), mock.patch.object(gap_wheels.os, "name", "nt"), \
              mock.patch.object(Path, "read_bytes", return_value=b""), \
              mock.patch.object(gap_wheels, "sha256", return_value="0" * 64), \
              mock.patch.object(gap_wheels, "namespace_folders", return_value=list(spaces)), \
+             mock.patch.object(gap_wheels, "init_files", side_effect=list(inits)), \
              mock.patch.object(gap_wheels, "missing_dlls", return_value=missing), \
              mock.patch.object(gap_wheels, "bundle_dlls", **bundle) as bundled, \
              mock.patch.object(gap_wheels, "retag", **retag) as tagged:  # fmt: skip
@@ -1436,6 +1437,11 @@ class NativeWithoutExtensions(unittest.TestCase):
         got, _, _ = self.finish(ext, [], bundle={"side_effect": AssertionError("nothing to bundle")},
                                 retag={"side_effect": AssertionError("already exact")})  # fmt: skip
         self.assertEqual(got, ext)
+        # Bundling that adds an __init__.py (a namespace folder) is no result.
+        got, _, _ = self.finish(built, ["vcomp140.dll"], inits=({"pkg/__init__.py", "google/__init__.py"},
+                                                                {"pkg/__init__.py"}),
+                                bundle={"return_value": final}, retag={"return_value": retagged})  # fmt: skip
+        self.assertIsNone(got)
         # A failed bundle is no result.
         got, _, _ = self.finish(built, ["vcomp140.dll"], bundle={"return_value": None}, retag={"return_value": retagged})
         self.assertIsNone(got)
@@ -1480,6 +1486,8 @@ class NativeWithoutExtensions(unittest.TestCase):
 
         tag = "cp314-cp314-win_arm64"
         self.assertIsNone(gap_wheels.wheel_tags_problem(wheel_bytes([tag]), tag))
+        lower = zipped({"pkg-1.0.dist-info/WHEEL": f"Wheel-Version: 1.0\nTag: {tag}\ntag: py3-none-any\n"})
+        self.assertIsNotNone(gap_wheels.wheel_tags_problem(lower, tag))  # read as headers: `tag:` counts too
         for tags in ([], ["py3-none-win_arm64"], [tag, "cp314-cp314-win_amd64"], ["cp314-cp314t-win_arm64"]):
             with self.subTest(tags):
                 self.assertIsNotNone(gap_wheels.wheel_tags_problem(wheel_bytes(tags), tag))
