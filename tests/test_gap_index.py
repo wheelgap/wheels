@@ -223,6 +223,9 @@ class Index(unittest.TestCase):
         self.assertEqual(build_gap_index.build(tmp / "gap-wheels.json", tmp / "b", fetch=fetch, omit_failing=True), 0)
         self.assertEqual(sorted(p.name for p in (tmp / "b/simple").iterdir()), ["index.html", "lz4"])
         self.assertNotIn("tiktoken", (tmp / "b/simple/index.html").read_text())
+        human = (tmp / "b/index.html").read_text()
+        self.assertIn("left out for now: PyPI couldn&#x27;t be read", human)
+        self.assertIn("1 so far", human)
 
     def test_more_cases_that_keep_our_wheel(self):
         ours_t = "tiktoken-0.14.0-cp314-cp314t-win_arm64.whl"

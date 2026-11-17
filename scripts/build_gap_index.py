@@ -365,6 +365,8 @@ def build(
                 print(f"gap wheels: PyPI's list can't be used, nothing written: {exc}", file=sys.stderr)
                 return 1
             print(f"::warning::gap wheels: {project} left out of the index, PyPI's list can't be used: {exc}")
+            for w in by_project[project]:
+                gone[w["wheel"]] = "left out for now: PyPI couldn't be read"
             continue
         listed = {name: link for name, link, _ in files}
         names_yanks = [(name, reason) for name, _, reason in files]

@@ -68,8 +68,9 @@ lots of outside contributions. Changes here are made by the maintainers, and eve
 - **A PyPI answer that would change what an installer sees.** The PyPI part of each page is copied from PyPI's JSON
   simple API: only `https://files.pythonhosted.org/packages/` links with PyPI's sha256, and every field must have the
   shape the spec gives. If PyPI can't be read for any project, or anything is off, the hourly rebuild deploys nothing
-  and the previous index stays up, so it is never published with files missing. A deploy a maintainer starts (a
-  takedown or opt-out) goes out anyway and leaves such a project out of the index, so removals never wait on PyPI.
+  and the previous index stays up, so it is never published with files missing. A push or a manual deploy (a
+  publish, takedown or opt-out) goes out anyway and leaves such a project out of the index until the next good
+  hourly run, so removals never wait on PyPI. While it's out, pip falls back to PyPI and uv reports it not found.
 
 **What it does not defend against**
 
