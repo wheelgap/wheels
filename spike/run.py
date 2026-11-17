@@ -47,8 +47,8 @@ tpy = str(tools / "Scripts" / "python.exe")
 run([tpy, "-m", "pip", "install", "--no-cache-dir", "--only-binary", ":all:", *TOOLS], check=True)
 env = gap_wheels.build_env()
 report["missing_before"] = gap_wheels.missing_dlls(built.read_bytes())
-run([tpy, "-m", "delvewheel", "show", str(built)], env=env)
-r = run([tpy, "-m", "delvewheel", "repair", "-w", str(work / "w1"), str(built)], env=env)
+run([tpy, "-m", "delvewheel", "show", "--analyze-existing", str(built)], env=env)
+r = run([tpy, "-m", "delvewheel", "repair", "--analyze-existing", "-w", str(work / "w1"), str(built)], env=env)
 repaired = sorted((work / "w1").glob("*.whl"))
 report["delvewheel_exit"] = r.returncode
 if len(repaired) == 1:
