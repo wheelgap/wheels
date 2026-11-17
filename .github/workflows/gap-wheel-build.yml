@@ -70,7 +70,9 @@ jobs:
           retention-days: 7
 
   build-docker:
-    # JavaScript actions can't run inside an Alpine container on ARM runners, so the build runs in `docker run`.
+    # Targets with an image (musl in Alpine, glibc in manylinux_2_28) build inside it, with `docker run`: JavaScript
+    # actions can't run inside an Alpine container on ARM runners. scripts/container_build.sh installs the image's
+    # build tools and a pinned Rust, then builds with the image's interpreter for the target (the `python` input).
     if: inputs.image != ''
     runs-on: ${{ inputs.runner }}
     timeout-minutes: 75
@@ -78,7 +80,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Build from the sdist, hash, and (build 1) install, with Alpine's build-base
+      - name: Build from the sdist in the target's image, hash, and (build 1) install
         env:
           IMAGE: ${{ inputs.image }}
           NAME: ${{ inputs.name }}
@@ -86,11 +88,12 @@ jobs:
           TARGET: ${{ inputs.target }}
           ATTEMPT: ${{ inputs.attempt }}
           RUNNER: ${{ inputs.runner }}
+          INTERPRETER: ${{ inputs.python }}
         run: |
           # The checkout is mounted read-only; the result goes to its own folder.
           mkdir -p "$RUNNER_TEMP/out"
-          docker run --rm -v "$PWD:/lab:ro" -v "$RUNNER_TEMP/out:/out" -w /lab -e NAME -e VERSION -e TARGET -e ATTEMPT -e RUNNER "$IMAGE" sh -c \
-            'apk add --no-cache build-base >/dev/null && python scripts/gap_wheels.py build --name "$NAME" --version "$VERSION" --target "$TARGET" --attempt "$ATTEMPT" --runner "$RUNNER" --out /out/result.json --wheel-dir /out/wheel'
+          docker run --rm -v "$PWD:/lab:ro" -v "$RUNNER_TEMP/out:/out" -w /lab \
+            -e NAME -e VERSION -e TARGET -e ATTEMPT -e RUNNER -e INTERPRETER "$IMAGE" sh scripts/container_build.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
         with:

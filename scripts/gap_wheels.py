@@ -189,8 +189,9 @@ def wheel_members(wheel: Path) -> dict[str, str]:
 REPAIR_TOOLS = ("auditwheel==6.8.2", "patchelf==0.19.1.0")
 
 
-def repair(wheel: Path, work: Path) -> Path | None:
-    """`auditwheel repair` of a Linux wheel into WORK/repaired: the one wheel it writes, or None (said why)."""
+def repair(wheel: Path, work: Path, plat: str | None = None) -> Path | None:
+    """`auditwheel repair` of a Linux wheel into WORK/repaired: the one wheel it writes, or None (said why). With
+    `plat`, to exactly that platform tag (auditwheel refuses if the wheel needs a newer glibc or musl)."""
     tools = work / "repair-tools"
     subprocess.run([sys.executable, "-m", "venv", str(tools)], check=True, timeout=INSTALL_TIMEOUT)
     bin_dir = tools / "bin"
@@ -204,7 +205,9 @@ def repair(wheel: Path, work: Path) -> Path | None:
         return None
     out = work / "repaired"
     try:
-        r = subprocess.run([str(bin_dir / "auditwheel"), "repair", "--wheel-dir", str(out), str(wheel)], check=False,
+        plat_args = ["--plat", plat, "--only-plat"] if plat else []  # exactly that tag, no wider (older) one
+        r = subprocess.run([str(bin_dir / "auditwheel"), "repair", *plat_args, "--wheel-dir", str(out), str(wheel)],
+                           check=False,
                            env=env, capture_output=True, text=True, errors="replace",
                            timeout=BUILD_TIMEOUT)  # fmt: skip
     except subprocess.TimeoutExpired:
@@ -219,7 +222,13 @@ def repair(wheel: Path, work: Path) -> Path | None:
 
 
 def run_build(
-    name: str, version: str, attempt: int, work: Path, members: dict[str, str] | None = None, keep: Path | None = None
+    name: str,
+    version: str,
+    attempt: int,
+    work: Path,
+    members: dict[str, str] | None = None,
+    keep: Path | None = None,
+    plat: str | None = None,
 ) -> dict:
     """Download the sdist, build the wheel from a fixed folder, hash it, and (first attempt) install it from a local
     folder into a fresh venv with nothing compiled. Fields left None mean that step didn't happen."""
@@ -260,7 +269,7 @@ def run_build(
         # Logged for the reproducibility spike (#124): a pair that differs after repair but matched before points
         # at auditwheel or patchelf, not the compiler.
         print(f"gap_wheels: before repair: {wheels[0].name} sha256 {sha256(wheels[0])}")
-        repaired = repair(wheels[0], work)
+        repaired = repair(wheels[0], work, plat)
         if repaired is None:
             print("gap_wheels: repair failed (the wheel built; auditwheel couldn't repair it)", file=sys.stderr)
             return fields
@@ -304,7 +313,8 @@ def cmd_build(args: argparse.Namespace) -> int:
     members: dict[str, str] = {}
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         keep = Path(args.wheel_dir) if args.wheel_dir else None
-        fields = run_build(args.name, args.version, args.attempt, Path(tmp), members, keep)
+        plat = build_lab.TARGETS[args.target].get("plat")
+        fields = run_build(args.name, args.version, args.attempt, Path(tmp), members, keep, plat=plat)
     result = {"schema": SCHEMA, "name": args.name, "version": args.version, "target": target,
               "attempt": args.attempt, "runner": args.runner, **fields}  # fmt: skip
     Path(args.out).write_text(json.dumps(result) + "\n", encoding="utf-8")
@@ -536,7 +546,9 @@ def cmd_dispatch(args: argparse.Namespace) -> int:
         if not (build_lab.NAME.fullmatch(job["name"]) and build_lab.VERSION.fullmatch(job["version"])):
             raise SystemExit(f"gap_wheels: not a plan job: {job!r}")
         fields = {"batch": args.batch, "name": job["name"], "version": job["version"], "target": job["target"],
-                  "attempt": str(job["attempt"]), "runner": spec["runner"], "python": spec["python"],
+                  "attempt": str(job["attempt"]), "runner": spec["runner"],
+                  # In an image the build runs that image's interpreter for the target, not setup-python's.
+                  "python": spec.get("interpreter", spec["python"]) if "image" in spec else spec["python"],
                   "image": spec.get("image", "")}  # fmt: skip
         command = ["workflow", "run", BUILD_WORKFLOW, "--repo", args.repo, "--ref", "main",
                    *[x for k, v in fields.items() for x in ("-f", f"{k}={v}")]]  # fmt: skip

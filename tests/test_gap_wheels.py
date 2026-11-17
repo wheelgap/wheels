@@ -69,6 +69,22 @@ class Plan(unittest.TestCase):
         alpine = [j for j in jobs if j["target"] == "3.14 musl-aarch64"]
         self.assertTrue(alpine and all(j["image"].startswith("python:3.14-alpine@sha256:") for j in alpine))
 
+    def test_linux_targets_build_in_a_pinned_image_to_one_exact_platform(self):
+        for target, spec in gap_wheels.build_lab.TARGETS.items():
+            with self.subTest(target):
+                if "linux" not in spec["platform"]:
+                    self.assertNotIn("image", spec)
+                    continue
+                self.assertRegex(spec["image"], r"@sha256:[0-9a-f]{64}$")  # by digest, never a moving tag
+                self.assertTrue(spec["interpreter"])
+                musl = spec.get("musl") == "yes"
+                self.assertRegex(spec["plat"], r"^musllinux_1_2_" if musl else r"^manylinux_2_28_")
+                self.assertRegex(spec["plat"], spec["wheel"])
+                if not musl:
+                    self.assertTrue(spec["image"].startswith(f"quay.io/pypa/{spec['plat']}@sha256:"))
+                    abi = "cp" + spec["python"].replace(".", "")
+                    self.assertEqual(spec["interpreter"], f"/opt/python/{abi.removesuffix('t')}-{abi}/bin/python")
+
     def test_max_and_only(self):
         self.assertEqual(len(gap_wheels.plan(BUILDS, 1)), 2)
         self.assertEqual({j["name"] for j in gap_wheels.plan(BUILDS, 10, {"lz4"})}, {"lz4"})
@@ -404,6 +420,16 @@ class Dispatch(unittest.TestCase):
         self.assertIn("target=3.14t win-arm64", started[0])
         self.assertIn("batch=99-1", started[0])
 
+    def test_an_image_build_gets_the_images_interpreter(self):
+        jobs = [j for j in gap_wheels.plan(BUILDS, 10) if j["target"] == "3.14 musl-aarch64"]
+        self.plan.write_text(json.dumps(jobs))
+        self.run_dispatch(iter([SHA] * len(jobs)))
+        started = self.started()
+        self.assertTrue(started)
+        for command in started:
+            self.assertIn("python=python", command)  # Alpine's own python, not setup-python's "3.14"
+            self.assertTrue(any(x.startswith("image=python:3.14-alpine@sha256:") for x in command))
+
     def test_stops_loudly_when_main_moves(self):
         with self.assertRaises(SystemExit) as raised:
             self.run_dispatch(iter([SHA, SHA, "2" * 40]))
@@ -455,7 +481,7 @@ class Rotation(unittest.TestCase):
         self.assertEqual(names(0), names(len(everyone)))  # wraps around
 
     def test_members_too_big_to_list_still_leave_the_result(self):
-        def fake_run_build(name, version, attempt, work, members, keep=None):
+        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None):
             members.update({f"pkg/f{i}.py": "a" * 64 for i in range(gap_wheels.MAX_MEMBERS + 1)})
             return {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
 
@@ -680,7 +706,7 @@ class KeepTheWheel(unittest.TestCase):
     def test_build_passes_the_wheel_dir_through(self):
         seen = {}
 
-        def fake_run_build(name, version, attempt, work, members, keep=None):
+        def fake_run_build(name, version, attempt, work, members, keep=None, plat=None):
             seen["keep"] = keep
             return {"sdist": None, "sdist_sha256": None, "wheel": None, "sha256": None, "installs": None}
 
@@ -837,3 +863,23 @@ class Repair(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Repair(unittest.TestCase):
+    def test_repairs_to_exactly_the_targets_platform(self):
+        calls = []
+
+        def run(cmd, **kw):
+            calls.append(cmd)
+            if "repair" in cmd:
+                out = Path(cmd[cmd.index("--wheel-dir") + 1])
+                out.mkdir(parents=True)
+                (out / "x-1.0-cp314-cp314t-manylinux_2_28_x86_64.whl").write_bytes(b"w")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(gap_wheels.subprocess, "run", run):
+            got = gap_wheels.repair(Path(tmp) / "x.whl", Path(tmp), "manylinux_2_28_x86_64")
+            self.assertEqual(got.name, "x-1.0-cp314-cp314t-manylinux_2_28_x86_64.whl")
+        repair = next(c for c in calls if "repair" in c)
+        self.assertEqual(repair[repair.index("--plat") + 1], "manylinux_2_28_x86_64")
+        self.assertIn("--only-plat", repair)  # no wider tag, such as manylinux2014, added on top

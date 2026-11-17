@@ -51,11 +51,17 @@ SCHEMA = 1
 TARGETS: dict[str, dict[str, str]] = {
     "3.14 win-arm64": {"runner": "windows-11-arm", "python": "3.14", "platform": "win-arm64", "wheel": r"win_arm64"},
     "3.14t win-arm64": {"runner": "windows-11-arm", "python": "3.14t", "platform": "win-arm64", "wheel": r"win_arm64"},
+    # Gap wheels for glibc are built inside the manylinux_2_28 image, so auditwheel can tag them manylinux_2_28 (RHEL 8+,
+    # Debian 11+, Ubuntu 20.04+); a build on the runner itself (glibc 2.39) could only be tagged for glibc 2.39.
+    # `interpreter` is the image's Python for the target, `plat` the one tag auditwheel repairs to.
     "3.14t linux-x86_64": {
         "runner": "ubuntu-24.04",
         "python": "3.14t",
         "platform": "linux-x86_64",
         "wheel": r"(?:many)?linux[_0-9]*_x86_64",
+        "image": "quay.io/pypa/manylinux_2_28_x86_64@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c",
+        "interpreter": "/opt/python/cp314-cp314t/bin/python",
+        "plat": "manylinux_2_28_x86_64",
     },
     "3.14 musl-aarch64": {
         "runner": "ubuntu-24.04-arm",
@@ -64,6 +70,8 @@ TARGETS: dict[str, dict[str, str]] = {
         "musl": "yes",
         "wheel": r"(?:musl)?linux[_0-9]*_aarch64",
         "image": "python:3.14-alpine@sha256:5862d971d1f0ae26b258cefa4e893556b1d3aba81bd2ff30888704ad378bab67",
+        "interpreter": "python",
+        "plat": "musllinux_1_2_aarch64",
     },
     # The newest Python on the two most common platforms: a month after 3.15.0, hundreds of the top packages still
     # have no wheel for it on either.
@@ -72,6 +80,9 @@ TARGETS: dict[str, dict[str, str]] = {
         "python": "3.15",
         "platform": "linux-x86_64",
         "wheel": r"(?:many)?linux[_0-9]*_x86_64",
+        "image": "quay.io/pypa/manylinux_2_28_x86_64@sha256:d086f64cddcace250ef0f0073583c51b8298159303290a730c9f59bd91edfd2c",
+        "interpreter": "/opt/python/cp315-cp315/bin/python",
+        "plat": "manylinux_2_28_x86_64",
     },
     "3.15 win-amd64": {"runner": "windows-2025", "python": "3.15", "platform": "win-amd64", "wheel": r"win_amd64"},
 }
