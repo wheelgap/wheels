@@ -59,6 +59,35 @@ def good(job, **over):
     return r
 
 
+class ReadmeTargets(unittest.TestCase):
+    def test_target_table_matches_publish_tags(self):
+        """Every publishable Python/platform/tag combination appears exactly once in the README."""
+        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
+        table = readme.split("| Platform | Python | Tag |", 1)[1].split("\n\n", 1)[0]
+        platforms = {
+            "win_arm64": "win-arm64",
+            "win_amd64": "win-amd64",
+            "manylinux_2_28_x86_64": "linux-x86_64",
+            "musllinux_1_2_aarch64": "musl-aarch64",
+        }
+        listed = {}
+        for line in table.splitlines():
+            if not line.startswith("|") or line.startswith("|---"):
+                continue
+            cells = [item.strip() for item in line.strip("|").split("|")]
+            self.assertEqual(len(cells), 3)
+            _, pythons, raw_tag = cells
+            tag = raw_tag.strip("`")
+            self.assertIn(tag, platforms)
+            for python in (part.strip() for part in pythons.split(",")):
+                code = python.removesuffix("t").replace(".", "")
+                abi = "t" if python.endswith("t") else ""
+                key = f"{python} {platforms[tag]}"
+                self.assertNotIn(key, listed)
+                listed[key] = f"cp{code}-cp{code}{abi}-{tag}"
+        self.assertEqual(listed, gap_wheels.PUBLISH_TAGS)
+
+
 class Plan(unittest.TestCase):
     def test_only_clean_builds_on_lab_targets(self):
         pairs = {(p["name"], p["target"]) for p in gap_wheels.clean_pairs(BUILDS)}

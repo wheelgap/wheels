@@ -38,11 +38,11 @@ The pipeline publishes wheels for these targets, each with exactly one tag:
 | Linux x86_64, glibc 2.28 or newer | 3.14t, 3.15 | `manylinux_2_28_x86_64` |
 | Alpine Linux (musl) on ARM | 3.14 | `musllinux_1_2_aarch64` |
 
-The wheels published so far are Windows on ARM ones for Python 3.14 and 3.14t. Linux wheels are built and repaired
-with a pinned auditwheel in the pinned `manylinux_2_28` or Alpine image, and a Linux wheel goes up only if every
-library it links against is bundled in it, where the loader finds it, or on that platform's standard list, as
-auditwheel's policy gives it. None is published until a maintainer approves a publish run that includes one
-([tracker#124](https://github.com/wheelgap/tracker/issues/124)).
+The wheels published so far are listed at https://wheelgap.github.io/wheels/. Linux wheels
+are built and repaired with a pinned auditwheel in the pinned `manylinux_2_28` or Alpine image, and a Linux wheel
+goes up only if every library it links against is bundled in it, where the loader finds it, or on that platform's
+standard list, as auditwheel's policy gives it. Every wheel is published only after a maintainer approves its
+publish run ([tracker#124](https://github.com/wheelgap/tracker/issues/124)).
 
 This repo holds only the pipeline that builds and publishes them, kept apart from
 [wheelgap](https://github.com/wheelgap/wheelgap) and [the tracker](https://github.com/wheelgap/tracker), which take

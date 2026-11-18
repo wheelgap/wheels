@@ -34,6 +34,81 @@ def no_network(project):
     raise AssertionError(f"a test fetched {project} from PyPI")
 
 
+class FileNames(unittest.TestCase):
+    """Direct, offline coverage for the file-name and platform helpers."""
+
+    def test_wheel_tags_five_and_six_parts(self):
+        expected = {("cp314", "cp314", "win_arm64")}
+        self.assertEqual(build_gap_index.wheel_tags("Foo_Bar-1.0RC1-cp314-cp314-win_arm64.whl"),
+                         ("foo-bar", "1.0rc1", expected))
+        self.assertEqual(build_gap_index.wheel_tags("Foo_Bar-1.0RC1-1-cp314-cp314-win_arm64.whl"),
+                         ("foo-bar", "1.0rc1", expected))
+
+    def test_wheel_tags_expand_compressed_sets(self):
+        filename = "foo_bar-1.0-cp314.cp315-abi3.none-win_arm64.manylinux_2_28_x86_64.whl"
+        parsed = build_gap_index.wheel_tags(filename)
+        self.assertIsNotNone(parsed)
+        name, version, tags = parsed
+        self.assertEqual((name, version), ("foo-bar", "1.0"))
+        self.assertEqual(tags, {(py, abi, plat)
+                                for py in ("cp314", "cp315")
+                                for abi in ("abi3", "none")
+                                for plat in ("win_arm64", "manylinux_2_28_x86_64")})
+        self.assertIsNone(build_gap_index.wheel_tags("foo-1.0.tar.gz"))
+        self.assertIsNone(build_gap_index.wheel_tags("foo-1.0-cp314-win_arm64.whl"))
+
+    def test_file_version_for_wheels_and_sdists(self):
+        cases = {
+            "tiktoken-0.14.0RC1-cp314-cp314-win_arm64.whl": "0.14.0rc1",
+            "tiktoken-0.14.0RC1.tar.gz": "0.14.0rc1",
+            "tiktoken-0.14.0RC1.zip": "0.14.0rc1",
+            "tiktoken-0.14.0-py3-none-any.whl": "0.14.0",
+            "other-1.0.tar.gz": None,
+        }
+        for filename, expected in cases.items():
+            with self.subTest(filename=filename):
+                self.assertEqual(build_gap_index.file_version(filename, "tiktoken"), expected)
+        self.assertIsNone(build_gap_index.file_version("foo-bar-1.0.tar.gz", "foo"))
+
+    def test_release_yank_absent_mixed_and_all_yanked(self):
+        fn1 = "foo-1.0.tar.gz"
+        fn2 = "foo-1.0-py3-none-any.whl"
+        self.assertEqual(build_gap_index.release_yank("1.0", "foo", [(fn1, None)]), (True, None))
+        self.assertEqual(build_gap_index.release_yank("2.0", "foo", [(fn1, "reason")]), (False, None))
+        self.assertEqual(build_gap_index.release_yank("1.0", "foo", [(fn1, "reason"), (fn2, None)]),
+                         (True, None))
+        self.assertEqual(build_gap_index.release_yank("1.0", "foo", [(fn1, "reason"), (fn2, "other")]),
+                         (True, "reason"))
+        self.assertEqual(build_gap_index.release_yank("1.0", "foo", [(fn1, ""), (fn2, "")]), (True, ""))
+
+    def test_linux_platform_standard_and_legacy_tags(self):
+        self.assertEqual(build_gap_index.linux_platform("manylinux_2_28_x86_64"),
+                         ("manylinux", 2, 28, "x86_64"))
+        self.assertEqual(build_gap_index.linux_platform("musllinux_1_2_aarch64"),
+                         ("musllinux", 1, 2, "aarch64"))
+        for name, version, arch in (("manylinux1", 5, "i686"),
+                                    ("manylinux2010", 12, "x86_64"),
+                                    ("manylinux2014", 17, "x86_64")):
+            self.assertEqual(build_gap_index.linux_platform(f"{name}_{arch}"),
+                             ("manylinux", 2, version, arch))
+        for invalid in ("linux_x86_64", "win_arm64", "manylinux2014_x86_64.evil"):
+            self.assertIsNone(build_gap_index.linux_platform(invalid))
+
+    def test_platform_covers_same_libc_and_architecture(self):
+        self.assertTrue(build_gap_index.platform_covers("manylinux_2_28_x86_64",
+                                                        "manylinux_2_28_x86_64"))
+        self.assertTrue(build_gap_index.platform_covers("manylinux2014_x86_64",
+                                                        "manylinux_2_28_x86_64"))
+        self.assertTrue(build_gap_index.platform_covers("manylinux_2_17_x86_64",
+                                                        "manylinux_2_28_x86_64"))
+        self.assertFalse(build_gap_index.platform_covers("manylinux_2_28_x86_64",
+                                                         "manylinux_2_17_x86_64"))
+        self.assertFalse(build_gap_index.platform_covers("musllinux_1_2_x86_64",
+                                                         "manylinux_2_28_x86_64"))
+        self.assertFalse(build_gap_index.platform_covers("manylinux_2_17_aarch64",
+                                                         "manylinux_2_28_x86_64"))
+
+
 class Index(unittest.TestCase):
     def build(self, wheels, pypi=None, expect=0, sdists=True, requests=None, **kw):
         """Build with a fake PyPI. Unless `sdists` is false, PyPI also lists each wheel's release (its sdist), as it

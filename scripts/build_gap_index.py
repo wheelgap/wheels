@@ -414,7 +414,7 @@ tokenizers = {{ index = "wheelgap" }}</code></pre>
         <li>Every wheel, its source hash and both of its build runs are listed in <a href="data/gap-wheels.json">gap-wheels.json</a>.</li>
       </ul>
       <p>One thing to know: a wheel here is only as safe as the source it was built from. Installing the package the normal way runs the same code. Only packages with an OSI-approved licence (or the PSF licence Python uses) go up. Some Windows wheels also carry Microsoft's Visual C++ runtime DLLs (in a <code>.libs</code> folder), redistributed under Visual Studio's terms, as many wheels on PyPI do.</p>
-      <p>The platforms: Windows on ARM for Python 3.14 and 3.14t, Windows x64 for Python 3.15, Linux x86_64 (glibc 2.28 or newer: <code>manylinux_2_28</code>) for Python 3.14t and 3.15, and Alpine Linux on ARM (<code>musllinux_1_2</code>) for Python 3.14. Linux wheels go up only once a maintainer approves a publish run that includes them; the table below shows which are here.</p>
+      <p>The platforms: Windows on ARM for Python 3.14 and 3.14t, Windows x64 for Python 3.15, Linux x86_64 (glibc 2.28 or newer: <code>manylinux_2_28</code>) for Python 3.14t and 3.15, and Alpine Linux on ARM (<code>musllinux_1_2</code>) for Python 3.14. Every wheel goes up only after a maintainer approves a publish run that includes it; the table below shows which are here.</p>
     </section>
     <section>
       <h2>If it's your package</h2>
