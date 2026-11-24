@@ -625,10 +625,14 @@ class Index(unittest.TestCase):
         # 1. A private index (PIP_CAVEAT).
         self.assertIn("pip treats every index alike, so do this only if the packages below come from PyPI: not if a "
                       "private index (set in pip.conf, say) has packages of the same names.", text)
-        # 2. Hash-pinned requirements: the line's form, and where the full sha256 is.
-        self.assertIn("If your requirements file pins hashes (--require-hashes), also add each wheel's hash to its "
-                      "line", text)
-        self.assertIn("NAME==VERSION --hash=sha256:", text)
+        # 2. Hash-pinned requirements (HASHES_HOW): on the package's existing line, keeping its hashes, never a line of
+        # its own; and where the full sha256 is.
+        self.assertIn("If your requirements file pins hashes (--require-hashes), add the wheel's hash to the package's "
+                      "existing requirement line", text)
+        self.assertIn("--hash=sha256:…, with the wheel's full sha256, after the hashes the line has (inside its "
+                      "\\-continued block, if it has one), keeping them. On a line of its own, a second requirement "
+                      "for the same package, pip won't use it.", text)
+        self.assertNotIn("NAME==VERSION --hash=sha256:", text)
         self.assertRegex(how, r'<a href="data/status\.json">status\.json</a>, as the <code>sha256</code> of the row '
                               r"whose <code>wheel</code> is the file name")
         # 3. uv's next steps (text_lines' "then run uv lock", and UV_MERGE).
@@ -641,9 +645,30 @@ class Index(unittest.TestCase):
                       "where that lockfile is made, then lock again.", text)
         self.assertIn("An index that isn't limited to these packages has the same risk as with pip: don't add it if "
                       "a private index has packages of the same names.", text)
-        # The commands themselves are as they were, and --fix isn't said to be in a release.
+        # The commands themselves are as they were.
         self.assertIn(f"<pre><code>pip install --extra-index-url {index} PACKAGE</code></pre>", how)
-        self.assertIn("not in a release yet", text)
+
+    def test_the_page_leads_with_wheelgap_fix(self):
+        # --fix is in wheelgap 0.14.0: the first thing under "How to use it", before the pip paragraph, with the
+        # version, its docs, and what it does first (an upgrade to an official release, these wheels as the fallback).
+        page = (self.build([wheel()]) / "index.html").read_text(encoding="utf-8")
+        how = page.split("<h2>How to use it</h2>", 1)[1].split("</section>", 1)[0]
+        text = html.unescape(re.sub(r"<[^>]+>", "", how))
+        command = "<pre><code>uvx wheelgap --fix requirements.txt</code></pre>"
+        self.assertIn(command, how)
+        self.assertLess(how.index(command), how.index("<pre><code>pip install --extra-index-url"))
+        self.assertIn("wheelgap 0.14.0 or later", text)
+        self.assertIn('<a href="https://wheelgap.github.io/wheelgap/cli/#fix"><code>--fix</code></a>', how)
+        self.assertIn("names an upgrade to an official release first, where a newer release has the wheel. Where none "
+                      "has, or if you can't upgrade, it says which gaps a wheel here fills", text)
+        self.assertIn("Or by hand. With pip, add this index next to PyPI:", text)
+        self.assertNotIn("not in a release yet", page)
+        self.assertNotIn("on its main branch", page)
+        # The README says the same.
+        readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
+        self.assertLess(readme.index("uvx wheelgap --fix requirements.txt"), readme.index("pip install --extra-index-url"))
+        self.assertIn("wheelgap/wheelgap) 0.14.0 or later", readme)
+        self.assertNotIn("not in a release yet", readme)
 
     def test_our_wheel_follows_pypi_yanking_its_release(self):
         sdist = pypi_file("tiktoken-0.14.0.tar.gz", yanked="security issue")

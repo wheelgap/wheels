@@ -5,6 +5,18 @@ index is at **https://wheelgap.github.io/wheels/simple/** and the list of wheels
 https://wheelgap.github.io/wheels/. (The older address, https://wheelgap.github.io/tracker/wheels/simple/, keeps
 working.)
 
+Let [wheelgap](https://github.com/wheelgap/wheelgap) 0.14.0 or later check your requirements file or lockfile:
+
+```
+uvx wheelgap --fix requirements.txt
+```
+
+For each gap, [`--fix`](https://wheelgap.github.io/wheelgap/cli/#fix) names an upgrade to an official release first,
+where a newer release has the wheel. Where none has, or if you can't upgrade, it says which gaps a wheel here fills and
+prints the lines to add for pip or uv.
+
+Or by hand. With pip, add this index next to PyPI:
+
 ```
 pip install --extra-index-url https://wheelgap.github.io/wheels/simple/ PACKAGE
 ```
@@ -12,8 +24,10 @@ pip install --extra-index-url https://wheelgap.github.io/wheels/simple/ PACKAGE
 pip treats every index alike, so do this only if the packages you install from here come from PyPI: not if a private
 index (set in `pip.conf`, say) has packages of the same names.
 
-If your requirements file pins hashes (`--require-hashes`), also add each wheel's hash to its line, or pip won't use
-the wheel: `NAME==VERSION --hash=sha256:…`, with the wheel's full sha256. It's in
+If your requirements file pins hashes (`--require-hashes`), add the wheel's hash to the package's existing requirement
+line, or pip won't use the wheel: `--hash=sha256:…`, with the wheel's full sha256, after the hashes the line has
+(inside its `\`-continued block, if it has one), keeping them. On a line of its own, a second requirement for the same
+package, pip won't use it. The full sha256 is in
 [`data/status.json`](https://wheelgap.github.io/wheels/data/status.json), as the `sha256` of the row whose `wheel` is
 the file name.
 
@@ -38,9 +52,6 @@ Other lockfiles (Poetry, PDM and the like) pin each file, so add `https://wheelg
 index (for these packages only, if the tool allows it) where that lockfile is made, then lock again. An index that
 isn't limited to these packages has the same risk as with pip: don't add it if a private index has packages of the
 same names.
-
-[wheelgap](https://github.com/wheelgap/wheelgap) has a `--fix` option on its main branch, not in a release yet, that
-prints these lines for the packages in your own requirements file or lockfile.
 
 uv takes all of a package's files from one index, so each project's page here lists every file PyPI has for it as well
 (PyPI's own links and hashes, refreshed hourly), plus our wheel. A lockfile made this way has the same files and hashes

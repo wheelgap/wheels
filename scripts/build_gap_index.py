@@ -527,10 +527,13 @@ def human_page(
     <p>These wheels are unofficial. wheelgap builds each one from the sdist PyPI has for that release. The package's maintainers didn't build them and haven't reviewed them. If one doesn't work or looks wrong, <a href="#report_a_problem">report it here</a>, not to the package.</p>
     <section>
       <h2>How to use it</h2>
-      <p>With pip, add this index next to PyPI:</p>
+      <p>Let <a href="https://github.com/wheelgap/wheelgap">wheelgap</a> 0.14.0 or later check your requirements file or lockfile:</p>
+      <pre><code>uvx wheelgap --fix requirements.txt</code></pre>
+      <p>For each gap, <a href="https://wheelgap.github.io/wheelgap/cli/#fix"><code>--fix</code></a> names an upgrade to an official release first, where a newer release has the wheel. Where none has, or if you can't upgrade, it says which gaps a wheel here fills and prints the lines to add for pip or uv.</p>
+      <p>Or by hand. With pip, add this index next to PyPI:</p>
       <pre><code>pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code></pre>
       <p>Where PyPI is pip's other index, pip still gets everything else from PyPI, and only takes a wheel from here when PyPI doesn't have one for your machine. pip treats every index alike, so do this only if the packages below come from PyPI: not if a private index (set in <code>pip.conf</code>, say) has packages of the same names.</p>
-      <p>If your requirements file pins hashes (<code>--require-hashes</code>), also add each wheel's hash to its line, or pip won't use the wheel: <code>NAME==VERSION --hash=sha256:…</code>, with the wheel's full sha256. It's in <a href="data/status.json">status.json</a>, as the <code>sha256</code> of the row whose <code>wheel</code> is the file name. The table below shows only its first 12 characters.</p>
+      <p>If your requirements file pins hashes (<code>--require-hashes</code>), add the wheel's hash to the package's existing requirement line, or pip won't use the wheel: <code>--hash=sha256:…</code>, with the wheel's full sha256, after the hashes the line has (inside its <code>\\</code>-continued block, if it has one), keeping them. On a line of its own, a second requirement for the same package, pip won't use it. The full sha256 is in <a href="data/status.json">status.json</a>, as the <code>sha256</code> of the row whose <code>wheel</code> is the file name. The table below shows only its first 12 characters.</p>
       <p>With uv, add the index to <code>pyproject.toml</code> and point only the packages you need at it. uv only applies <code>[tool.uv.sources]</code> to your direct dependencies, so if a package comes in through another one (tokenizers through transformers, say), add it to <code>dependencies</code> as well:</p>
       <pre><code>[[tool.uv.index]]
 name = "wheelgap"
@@ -542,7 +545,6 @@ tokenizers = {{ index = "wheelgap" }}</code></pre>
       <p>Then run <code>uv lock</code>. If <code>pyproject.toml</code> already has a <code>[tool.uv.sources]</code> table, add the package's line to it instead of a second one.</p>
       <p>uv takes all of a package's files from one index, so each package's page here lists every file PyPI has for it too, with PyPI's own links and hashes, plus our wheel. Everything else still comes from PyPI. <code>uv pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code> works too.</p>
       <p>Other lockfiles (Poetry, PDM and the like) pin each file, so add <code>{e(INDEX_URL)}</code> as an index (for these packages only, if the tool allows it) where that lockfile is made, then lock again. An index that isn't limited to these packages has the same risk as with pip: don't add it if a private index has packages of the same names.</p>
-      <p><a href="https://github.com/wheelgap/wheelgap">wheelgap</a> has a <code>--fix</code> option on its main branch, not in a release yet, that prints these lines for the packages in your own requirements file or lockfile.</p>
       <p>The PyPI part of the list is refreshed every hour, so with uv a release uploaded in the last hour may not show up yet for these packages. If PyPI can't be read, the index isn't updated at all, rather than going up with files missing. The pages are plain HTML, which has no upload times, so uv's <code>exclude-newer</code> finds no files for these packages here.</p>
       <p>Each wheel is for one release. If a newer release comes out without a wheel, pip or uv will try to build that one instead. Add <code>--prefer-binary</code> (pip) to keep using the wheel here. When the release ships its own wheel for the same platform, ours drops out of the index.</p>
     </section>
