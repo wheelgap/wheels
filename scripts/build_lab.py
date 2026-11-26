@@ -33,6 +33,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
+import keyword
 import os
 import re
 import shutil
@@ -309,19 +310,42 @@ def wheel_tag(wheel: Path) -> str:
     return "-".join(wheel.name[: -len(".whl")].split("-")[-3:]).lower()
 
 
+_EXTENSION_TAG = re.compile(r"\.(?:cpython-[^.]+|abi3t?|cp3\d+t?-[^.]+)\Z")
+
+
+def _wheel_import_name(parts: list[str]) -> str | None:
+    if parts and all(
+        part.isascii() and part.isidentifier() and not keyword.iskeyword(part) for part in parts
+    ):
+        return ".".join(parts)
+    return None
+
+
 def wheel_modules(wheel: Path) -> tuple[list[str], list[str], int]:
     """What to import from a wheel: its shallowest packages and modules (namespace packages included, tests left out),
     its extension modules by dotted name (test helpers left out), and how many extension modules there are."""
     with zipfile.ZipFile(wheel) as z:
         entries = [e for e in z.namelist() if not e.split("/", 1)[0].endswith((".dist-info", ".data"))]
-    dotted = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", re.ASCII)
     extensions = []
+    counted = set()
+    dotted = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", re.ASCII)
     for e in entries:
-        tagged = re.search(r"\.(cpython-[^/]+|abi3t?|cp3\d+t?-[^/]+)\.so$", e) is not None
-        if e.endswith(".pyd") or tagged:  # a plain .so is a shared library (llvmlite's, via ctypes), not a module
-            parts = e.split("/")
-            name = ".".join([*parts[:-1], parts[-1].split(".", 1)[0]])
-            if dotted.fullmatch(name):
+        *parts, filename = e.split("/")
+        stem, _, suffix = filename.rpartition(".")
+        tagged_so = re.search(r"\.(cpython-[^/]+|abi3t?|cp3\d+t?-[^/]+)\.so$", e)
+        if suffix != "pyd" and not tagged_so:
+            continue
+        # Keep the original count for the import check, even when an import name is rejected.
+        counted_name = ".".join([*parts, filename.split(".", 1)[0]])
+        if dotted.fullmatch(counted_name):
+            counted.add(counted_name)
+        tag = _EXTENSION_TAG.search(stem)
+        # A plain .so may be a shared library loaded via ctypes.
+        if suffix == "pyd" or (suffix == "so" and tag):
+            if tag:
+                stem = stem[:tag.start()]
+            name = _wheel_import_name([*parts, stem])
+            if name:
                 extensions.append(name)
     shipped = [e for e in extensions if not any(p in ("tests", "test") for p in e.split("."))]  # not test helpers
     modules = set(shipped)
@@ -331,11 +355,11 @@ def wheel_modules(wheel: Path) -> tuple[list[str], list[str], int]:
         parts = e[:-3].split("/")
         if parts[-1] == "__init__":
             parts = parts[:-1]
-        name = ".".join(parts)
-        if parts and dotted.fullmatch(name) and not any(p in ("tests", "test") for p in parts):
+        name = _wheel_import_name(parts)
+        if name and not any(p in ("tests", "test") for p in parts):
             modules.add(name)
     shallow = sorted(modules, key=lambda m: (m.count("."), m))
-    return shallow[:3], sorted(set(shipped))[:MAX_EXTENSIONS], len(set(extensions))
+    return shallow[:3], sorted(set(shipped))[:MAX_EXTENSIONS], len(counted)
 
 
 def wheel_names(wheel: Path) -> dict[str, list[str]]:
@@ -343,19 +367,23 @@ def wheel_names(wheel: Path) -> dict[str, list[str]]:
     module is the wheel's own if it's one of the modules or inside one of the packages, and otherwise a dependency."""
     with zipfile.ZipFile(wheel) as z:
         entries = [e for e in z.namelist() if not e.split("/", 1)[0].endswith((".dist-info", ".data"))]
-    dotted = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", re.ASCII)
     modules, packages = set(), set()
     for e in entries:
-        parts = e.split("/")
-        if not parts[-1].endswith((".py", ".pyd", ".so")):
+        *parts, filename = e.split("/")
+        stem, _, suffix = filename.rpartition(".")
+        if suffix not in ("py", "pyd", "so"):
             continue
-        last = parts[-1].split(".", 1)[0]
-        if last == "__init__":
-            packages.add(".".join(parts[:-1]))
+        if suffix != "py":
+            stem = _EXTENSION_TAG.sub("", stem)
+        if stem == "__init__":
+            names = packages
         else:
-            modules.add(".".join([*parts[:-1], last]))
-    return {"modules": sorted(n for n in modules if dotted.fullmatch(n)),
-            "packages": sorted(n for n in packages if dotted.fullmatch(n))}  # fmt: skip
+            parts.append(stem)
+            names = modules
+        name = _wheel_import_name(parts)
+        if name:
+            names.add(name)
+    return {"modules": sorted(modules), "packages": sorted(packages)}
 
 
 # argv: "top" or "extensions", a JSON file from wheel_names, then the modules. "top" must import each module, but

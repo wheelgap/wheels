@@ -1267,13 +1267,33 @@ class WheelModules(unittest.TestCase):
         self.assertEqual(self.modules("demo/__init__.py", *bare), (["demo"], [], 0))
         self.assertEqual(self.names("demo/__init__.py", *bare), {"modules": [], "packages": ["demo"]})
 
-    def test_a_folder_with_a_dot_in_its_name_reads_as_two_packages(self):
-        # Pinned as it is today, and probably wrong: `demo/x.data/y.py` can't be imported as demo.x.data.y. The
-        # name is checked after the parts are joined with dots, so a dot inside one part passes. Only the wheel's
-        # top folder is checked for `.dist-info` and `.data`.
-        self.assertEqual(self.modules("demo/__init__.py", "demo/x.data/y.py"), (["demo", "demo.x.data.y"], [], 0))
+    def test_a_folder_with_a_dot_in_its_name_is_ignored(self):
+        self.assertEqual(self.modules("demo/__init__.py", "demo/x.data/y.py"), (["demo"], [], 0))
         self.assertEqual(self.names("demo/__init__.py", "demo/x.data/y.py"),
-                         {"modules": ["demo.x.data.y"], "packages": ["demo"]})  # fmt: skip
+                         {"modules": [], "packages": ["demo"]})  # fmt: skip
+
+    def test_wheel_import_names_validate_paths_and_count_extensions(self):
+        members = (
+            "demo/__init__.py",
+            "demo/x.data/__init__.py",
+            "demo/x.data/y.py",
+            "demo/class/x.py",
+            "demo/for.py",
+            "demo/dotted.stem.py",
+            "demo/x.y/_ext.cpython-314-x86_64-linux-gnu.so",
+            "demo/_invalid.stem.abi3.so",
+            "demo/_ok.abi3.so",
+        )
+        self.assertEqual(self.modules(*members), (["demo", "demo._ok"], ["demo._ok"], 3))
+        self.assertEqual(self.names(*members), {"modules": ["demo._ok"], "packages": ["demo"]})
+
+    def test_non_importable_extension_still_counts(self):
+        for member in (
+            "demo/x.y/_ext.cpython-314-x86_64-linux-gnu.so",
+            "demo/_invalid.stem.abi3.so",
+        ):
+            with self.subTest(member=member):
+                self.assertEqual(self.modules(member), ([], [], 1))
 
     def test_names_that_arent_dotted_identifiers_are_left_out(self):
         odd = ["demo/my-module.py", "demo/2fast.py", "my-pkg/__init__.py", "my-pkg/mod.py", "demo/_h-x.abi3.so",
