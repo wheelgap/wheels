@@ -113,7 +113,9 @@ def excluding_clause(requires_python: str, python: tuple[int, ...]) -> str | Non
 
 def requires_python_error(value: object, target: object) -> str | None:
     """What's wrong with an entry's requires_python, or None: it must be null (no limit) or a value that can be read
-    and that admits the target's own Python. An installer skips a file whose requires-python leaves its Python out."""
+    and that admits the target's own Python. An installer skips a file whose requires-python leaves its Python out.
+    The target's Python is checked twice: as X.Y.0 (how pip compares a pre-release of a new Python) and as X.Y.99,
+    a patch release later than any real one, so a value like <3.14.1 or ==3.14.0 can't leave out every later 3.14."""
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
@@ -123,9 +125,14 @@ def requires_python_error(value: object, target: object) -> str | None:
         clause = excluding_clause(value, python or (3, 0, 0))
     except ValueError:
         return f"can't read requires_python {value!r}"
-    if python is None or clause is None:  # a target it can't read is reported by the target check
+    if python is None:  # a target it can't read is reported by the target check
         return None
-    return f"requires_python {clause} excludes Python {python[0]}.{python[1]}, its target"
+    if clause is not None:
+        return f"requires_python {clause} excludes Python {python[0]}.{python[1]}, its target"
+    if (clause := excluding_clause(value, (python[0], python[1], 99))) is not None:
+        later = f"{python[0]}.{python[1]}.99"
+        return f"requires_python {clause} excludes Python {later}, a later patch release of its target"
+    return None
 
 
 def published_date(value: object) -> dt.date | None:
@@ -265,6 +272,11 @@ class PublishedData(unittest.TestCase):
             ("python no operator", lambda w: w.update(requires_python="42")),
             ("python words", lambda w: w.update(requires_python=">=three")),
             ("python empty", lambda w: w.update(requires_python="")),
+            # Each admits 3.14.0 and leaves out a later 3.14: the X.Y.99 check names that Python.
+            ("python late patch <", lambda w: w.update(requires_python="<3.14.1")),
+            ("python late patch !=", lambda w: w.update(requires_python="!=3.14.99")),
+            ("python late patch ==", lambda w: w.update(requires_python="==3.14.0")),
+            ("python late patch ~=", lambda w: w.update(requires_python="~=3.14.0,<3.14.5")),
         ]
         for description, mutate in cases:
             with self.subTest(description=description):
@@ -278,9 +290,17 @@ class PublishedData(unittest.TestCase):
                 if description.startswith("python"):
                     self.assertEqual(len(errors), 1, errors)
                     self.assertIn("requires_python", errors[0])
+                if description.startswith("python late patch"):
+                    self.assertIn("excludes Python 3.14.99, a later patch release of its target", errors[0])
+        for value in (">=3.10", "<4,>=3.9", "==3.14.*", "~=3.14.0"):  # admit 3.14.0 and every later 3.14
+            with self.subTest(value=value):
+                entry = copy.deepcopy(sample)
+                entry["requires_python"] = value
+                self.assertEqual(validation_errors({"schema": gap_wheels.INDEX_SCHEMA, "wheels": [entry]}, set()), [])
 
     def test_requires_python_must_admit_the_targets_own_python(self):
         wheel = "demo-1.0-cp314-cp314-win_arm64.whl"
+        later = "a later patch release of its target"
         for target, value, expected in (
             ("3.14 musl-aarch64", ">=3.15", "requires_python >=3.15 excludes Python 3.14, its target"),
             ("3.14t win-arm64", "<3.14", "requires_python <3.14 excludes Python 3.14, its target"),
@@ -296,6 +316,13 @@ class PublishedData(unittest.TestCase):
             ("3.14 win-arm64", "  ", "requires_python must be null or a non-empty string, not '  '"),
             ("3.14 win-arm64", [">=3.9"], "requires_python must be null or a non-empty string, not ['>=3.9']"),
             ("not a target", ">=three", "can't read requires_python '>=three'"),
+            ("3.14 musl-aarch64", "<3.14.1", f"requires_python <3.14.1 excludes Python 3.14.99, {later}"),
+            ("3.14t win-arm64", "==3.14.0", f"requires_python ==3.14.0 excludes Python 3.14.99, {later}"),
+            ("3.15 win-amd64", "==3.15.0", f"requires_python ==3.15.0 excludes Python 3.15.99, {later}"),
+            ("3.14 win-arm64", "<=3.14", f"requires_python <=3.14 excludes Python 3.14.99, {later}"),  # <=3.14.0
+            ("3.14 win-arm64", ">=3.9,<3.14.5", f"requires_python <3.14.5 excludes Python 3.14.99, {later}"),
+            # Both checks fail: X.Y.0's message, as before.
+            ("3.14 win-arm64", "<3.14.1,>=3.15", "requires_python >=3.15 excludes Python 3.14, its target"),
         ):
             with self.subTest(target=target, value=value):
                 self.assertEqual(requires_python_error(value, target), expected)
@@ -308,6 +335,9 @@ class PublishedData(unittest.TestCase):
             ("3.15 win-amd64", ">=3.15"),  # 3.15.0, as pip compares it, so an alpha of 3.15 is admitted
             ("3.14t linux-x86_64", "<4,>=3.9"),
             ("3.14 win-arm64", " >= 3.9 , < 4 "),
+            ("3.14 win-arm64", "==3.14.*"),
+            ("3.14t win-arm64", "~=3.14.0"),
+            ("3.15 win-amd64", "~=3.15.0, <3.16"),
             ("not a target", ">=3.99"),  # the target check reports this entry
         ):
             with self.subTest(target=target, value=value):
