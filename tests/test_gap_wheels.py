@@ -2735,7 +2735,7 @@ GRAFTED = "bundles a shared library in a .libs folder; a recipe's library must b
 
 class GraftedLibrary(unittest.TestCase):
     """grafted_library_problem reads only member names: a recipe's library is linked in statically, so a top-level
-    <dist>.libs/ folder (where auditwheel grafts a shared library it bundles) means it wasn't (#47)."""
+    <dist>.libs/ folder in site-packages (where auditwheel grafts a shared library it bundles) means it wasn't (#47)."""
 
     def problem(self, *members):
         return gap_wheels.grafted_library_problem(zipped({m: b"" for m in members}))
@@ -2751,6 +2751,20 @@ class GraftedLibrary(unittest.TestCase):
 
     def test_a_top_level_file_named_like_a_libs_folder_passes(self):
         self.assertIsNone(self.problem("yaml/__init__.py", "notes.libs"))
+
+    def test_a_libs_folder_under_purelib_or_platlib_is_refused(self):
+        # Installed into site-packages as a top-level .libs folder, like one at the wheel's root.
+        for scheme in ("platlib", "purelib"):
+            with self.subTest(scheme=scheme):
+                self.assertEqual(self.problem("yaml/__init__.py", "pyyaml-6.0.3.dist-info/METADATA",
+                                              f"pyyaml-6.0.3.data/{scheme}/PyYAML.libs/x.so"), GRAFTED)  # fmt: skip
+
+    def test_a_libs_folder_that_isnt_installed_into_site_packages_passes(self):
+        for member in ("pyyaml-6.0.3.data/data/PyYAML.libs/x.so", "pyyaml-6.0.3.data/scripts/PyYAML.libs/x.so",
+                       "pyyaml-6.0.3.data/headers/PyYAML.libs/x.so", "pyyaml-6.0.3.dist-info/PyYAML.libs/x.so",
+                       "pyyaml-6.0.3.data/platlib/yaml/vendor.libs/x.so"):  # fmt: skip
+            with self.subTest(member=member):
+                self.assertIsNone(self.problem("yaml/__init__.py", "pyyaml-6.0.3.dist-info/METADATA", member))
 
     def test_a_nested_libs_folder_passes(self):
         # Only a top-level folder: that's where auditwheel grafts. Pins today's behaviour.
