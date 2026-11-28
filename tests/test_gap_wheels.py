@@ -2759,6 +2759,15 @@ class GraftedLibrary(unittest.TestCase):
                 self.assertEqual(self.problem("yaml/__init__.py", "pyyaml-6.0.3.dist-info/METADATA",
                                               f"pyyaml-6.0.3.data/{scheme}/PyYAML.libs/x.so"), GRAFTED)  # fmt: skip
 
+    def test_a_libs_folder_under_any_data_folder_is_refused(self):
+        # pip installs purelib/ and platlib/ from any top-level *.data folder, so a misnamed or differently cased one
+        # still puts the .libs folder into site-packages; the install test runs pip, so the refusal takes its view.
+        for data in ("PyYAML-6.0.3.data", "pyyaml-6.0.3-1.data", "x.data"):
+            for scheme in ("platlib", "purelib"):
+                with self.subTest(data=data, scheme=scheme):
+                    self.assertEqual(self.problem("yaml/__init__.py", "pyyaml-6.0.3.dist-info/METADATA",
+                                                  f"{data}/{scheme}/PyYAML.libs/libyaml-0.so.2"), GRAFTED)  # fmt: skip
+
     def test_a_libs_folder_that_isnt_installed_into_site_packages_passes(self):
         for member in ("pyyaml-6.0.3.data/data/PyYAML.libs/x.so", "pyyaml-6.0.3.data/scripts/PyYAML.libs/x.so",
                        "pyyaml-6.0.3.data/headers/PyYAML.libs/x.so", "pyyaml-6.0.3.dist-info/PyYAML.libs/x.so",
