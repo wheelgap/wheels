@@ -321,11 +321,31 @@ def _wheel_import_name(parts: list[str]) -> str | None:
     return None
 
 
+def site_packages_paths(names: list[str]) -> list[str]:
+    """Where a wheel's members are installed, relative to site-packages, in order, leaving out the ones installed
+    elsewhere or not at all. A member at the wheel's root keeps its name. One in the wheel's data directory (the wheel
+    spec's `<name>-<version>.data`, named after its one .dist-info folder) under purelib/ or platlib/ loses those two
+    parts; its other folders (scripts, headers, data) go elsewhere. Any other top-level folder ending in .dist-info or
+    .data is left out: pip installs every `*.data` folder like the data directory, but uv only the real one."""
+    infos = {n.split("/", 1)[0] for n in names if "/" in n and n.split("/", 1)[0].endswith(".dist-info")}
+    data = infos.pop().removesuffix(".dist-info") + ".data" if len(infos) == 1 else None
+    paths = []
+    for n in names:
+        top, _, rest = n.partition("/")
+        if not top.endswith((".dist-info", ".data")):
+            paths.append(n)
+            continue
+        scheme, _, rest = rest.partition("/")
+        if top == data and scheme in ("purelib", "platlib") and rest:
+            paths.append(rest)
+    return paths
+
+
 def wheel_modules(wheel: Path) -> tuple[list[str], list[str], int]:
     """What to import from a wheel: its shallowest packages and modules (namespace packages included, tests left out),
     its extension modules by dotted name (test helpers left out), and how many extension modules there are."""
     with zipfile.ZipFile(wheel) as z:
-        entries = [e for e in z.namelist() if not e.split("/", 1)[0].endswith((".dist-info", ".data"))]
+        entries = site_packages_paths(z.namelist())
     extensions = []
     counted = set()
     dotted = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*", re.ASCII)
@@ -366,7 +386,7 @@ def wheel_names(wheel: Path) -> dict[str, list[str]]:
     """Every module a wheel installs, and its regular packages (those with an __init__), by dotted name: a missing
     module is the wheel's own if it's one of the modules or inside one of the packages, and otherwise a dependency."""
     with zipfile.ZipFile(wheel) as z:
-        entries = [e for e in z.namelist() if not e.split("/", 1)[0].endswith((".dist-info", ".data"))]
+        entries = site_packages_paths(z.namelist())
     modules, packages = set(), set()
     for e in entries:
         *parts, filename = e.split("/")
