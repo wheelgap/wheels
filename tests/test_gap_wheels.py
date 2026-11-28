@@ -2730,6 +2730,39 @@ class BundledLicence(unittest.TestCase):
         self.assertIn("libother 1.0", gap_wheels.bundled_licence_problem(good_wheel, [self.record, other]))
 
 
+GRAFTED = "bundles a shared library in a .libs folder; a recipe's library must be linked in statically"
+
+
+class GraftedLibrary(unittest.TestCase):
+    """grafted_library_problem reads only member names: a recipe's library is linked in statically, so a top-level
+    <dist>.libs/ folder (where auditwheel grafts a shared library it bundles) means it wasn't (#47)."""
+
+    def problem(self, *members):
+        return gap_wheels.grafted_library_problem(zipped({m: b"" for m in members}))
+
+    def test_a_wheel_without_a_libs_folder_passes(self):
+        self.assertIsNone(self.problem("yaml/__init__.py", "yaml/_yaml.cpython-315-x86_64-linux-gnu.so",
+                                       "pyyaml-6.0.3.dist-info/METADATA", "pyyaml-6.0.3.dist-info/RECORD"))  # fmt: skip
+
+    def test_any_top_level_folder_ending_in_libs_is_refused(self):
+        for member in ("PyYAML.libs/libyaml-0.so.2", "pyyaml.libs/x.so", "pkg_name.libs/sub/y.so.1"):
+            with self.subTest(member=member):
+                self.assertEqual(self.problem("yaml/__init__.py", member), GRAFTED)
+
+    def test_a_top_level_file_named_like_a_libs_folder_passes(self):
+        self.assertIsNone(self.problem("yaml/__init__.py", "notes.libs"))
+
+    def test_a_nested_libs_folder_passes(self):
+        # Only a top-level folder: that's where auditwheel grafts. Pins today's behaviour.
+        self.assertIsNone(self.problem("yaml/__init__.py", "yaml/vendor.libs/x.so"))
+
+    def test_bytes_that_arent_a_zip_are_a_reason_not_an_exception(self):
+        self.assertEqual(gap_wheels.grafted_library_problem(b"not a wheel"), "couldn't read its members")
+
+    def test_an_empty_zip_passes(self):
+        self.assertIsNone(gap_wheels.grafted_library_problem(zipped({})))
+
+
 class RecipeStage(unittest.TestCase):
     def setUp(self):
         self.record = recipes.record(LIBYAML)
@@ -2766,6 +2799,15 @@ class RecipeStage(unittest.TestCase):
         self.assertEqual(staged[0]["recipes"], [record])
         self.assertEqual(staged[0]["licence"], "MIT")  # the package's own, from PyPI, as before
         self.assertIn("| pyyaml | 6.0.3 | 3.15 linux-x86_64 | staged |", summary)
+
+    def test_a_recipe_wheel_with_a_libs_folder_isnt_staged(self):
+        # Its licence text is right, so it's grafted_library_problem, after bundled_licence_problem, that refuses it.
+        record = {**self.record, "licence_sha256": hashlib.sha256(LICENCE_TEXT).hexdigest()}
+        grafted = rezip(self.licensed(), lambda m: m.update({"PyYAML.libs/libyaml-0-1a2b3c4d.so.2": b""}))
+        with mock.patch.object(recipes, "records", return_value=[record]):
+            staged, summary, _ = self.stage([self.entry(recipes=[record])], grafted)
+        self.assertEqual(staged, [])
+        self.assertIn(f"| pyyaml | 6.0.3 | 3.15 linux-x86_64 | {GRAFTED} |", summary)
 
     def test_without_the_pinned_licence_text_it_isnt_staged(self):
         # The real recipe's sha256, and a wheel carrying some other text (or none) where libyaml's belongs.
