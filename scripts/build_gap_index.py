@@ -528,7 +528,7 @@ def human_page(
     <section>
       <h2>How to use it</h2>
       <p>Let <a href="https://github.com/wheelgap/wheelgap">wheelgap</a> 0.14.0 or later check your requirements file or lockfile:</p>
-      <pre><code>uvx wheelgap --fix requirements.txt</code></pre>
+      <pre><code>uvx wheelgap@latest --fix requirements.txt</code></pre>
       <p>For each gap, <a href="https://wheelgap.github.io/wheelgap/cli/#fix"><code>--fix</code></a> names an upgrade to an official release first, where a newer release has the wheel. Where none has, or if you can't upgrade, it says which gaps a wheel here fills and prints the lines to add for pip or uv.</p>
       <p>Or by hand. With pip, add this index next to PyPI:</p>
       <pre><code>pip install --extra-index-url {e(INDEX_URL)} PACKAGE</code></pre>
