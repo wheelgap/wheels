@@ -1247,14 +1247,19 @@ class WheelModules(unittest.TestCase):
         self.assertEqual(count, limit + 5)
         self.assertEqual(top, ["demo._m000", "demo._m001", "demo._m002"])
 
-    def test_dist_info_and_data_folders_are_ignored_by_both(self):
+    def test_dist_info_and_the_other_data_folders_are_ignored_by_both(self):
+        # Not installed into site-packages: .dist-info, and every .data folder but purelib and platlib.
         inside = [
             "demo-1.0.dist-info/METADATA",
             "demo-1.0.dist-info/top_level.py",
             "demo-1.0.dist-info/_x.abi3.so",
-            "demo-1.0.data/purelib/extra.py",
-            "demo-1.0.data/platlib/_speed.cp314-win_arm64.pyd",
             "demo-1.0.data/scripts/run.py",
+            "demo-1.0.data/scripts/tool.py",
+            "demo-1.0.data/headers/x.h",
+            "demo-1.0.data/data/share/extra.py",
+            "demo-1.0.data/data/_speed.cp314-win_arm64.pyd",
+            "demo-1.0.data/extra.py",  # in no scheme folder
+            "demo-1.0.data/purelib",  # a file, not a folder: nothing under it
         ]
         self.assertEqual(self.modules(*inside), ([], [], 0))
         self.assertEqual(self.names(*inside), {"modules": [], "packages": []})
@@ -1262,10 +1267,68 @@ class WheelModules(unittest.TestCase):
         self.assertEqual(self.names("demo/__init__.py", *inside), {"modules": [], "packages": ["demo"]})
         # `demo-1.0.data` could never be a dotted name anyway (the hyphen). A folder with no version shows it is the
         # `.dist-info` or `.data` ending that leaves these out, not that.
-        bare = ["demo.data/purelib/extra.py", "demo.data/platlib/_speed.abi3.so", "demo.dist-info/hook.py",
+        bare = ["demo.data/scripts/extra.py", "demo.data/headers/_speed.abi3.so", "demo.dist-info/hook.py",
                 "demo.dist-info/__init__.py"]  # fmt: skip
         self.assertEqual(self.modules("demo/__init__.py", *bare), (["demo"], [], 0))
         self.assertEqual(self.names("demo/__init__.py", *bare), {"modules": [], "packages": ["demo"]})
+        # A .data folder that isn't named after the wheel's .dist-info folder: pip installs its purelib and platlib,
+        # uv doesn't, so their modules aren't the wheel's. Nor are a data directory's when there's no one .dist-info.
+        other = ["demo-1.0.dist-info/METADATA", "demo.data/purelib/extra.py", "other-1.0.data/platlib/_s.abi3.so"]
+        self.assertEqual(self.modules("demo/__init__.py", *other), (["demo"], [], 0))
+        self.assertEqual(self.names("demo/__init__.py", *other), {"modules": [], "packages": ["demo"]})
+        for infos in ([], ["demo-1.0.dist-info/METADATA", "demo-2.0.dist-info/METADATA"]):
+            with self.subTest(infos=infos):
+                self.assertEqual(self.modules(*infos, "demo-1.0.data/purelib/extra.py"), ([], [], 0))
+
+    def test_purelib_and_platlib_are_read_as_the_wheels_root(self):
+        # pip installs <dist>.data/purelib/ and platlib/ into site-packages, like the wheel's root (#38).
+        for scheme in ("platlib", "purelib"):
+            with self.subTest(scheme=scheme):
+                layout = [f"demo-1.0.data/{scheme}/demo/__init__.py",
+                          f"demo-1.0.data/{scheme}/demo/_speed.cpython-314-x86_64-linux-gnu.so",
+                          "demo-1.0.dist-info/METADATA"]  # fmt: skip
+                self.assertEqual(self.modules(*layout), (["demo", "demo._speed"], ["demo._speed"], 1))
+                self.assertEqual(self.names(*layout), {"modules": ["demo._speed"], "packages": ["demo"]})
+
+    def test_a_module_at_the_root_and_under_platlib_is_named_once(self):
+        members = ["demo/__init__.py", "demo/_speed.abi3.so", "demo-1.0.dist-info/METADATA",
+                   "demo-1.0.data/platlib/demo/__init__.py", "demo-1.0.data/platlib/demo/_speed.abi3.so",
+                   "demo-1.0.data/purelib/demo/__init__.py"]  # fmt: skip
+        self.assertEqual(self.modules(*members), (["demo", "demo._speed"], ["demo._speed"], 1))
+        self.assertEqual(self.names(*members), {"modules": ["demo._speed"], "packages": ["demo"]})
+
+    def test_wheel_names_lists_modules_and_packages_under_purelib_and_platlib(self):
+        got = self.names(
+            "demo-1.0.data/purelib/pure/__init__.py",
+            "demo-1.0.data/purelib/pure/core.py",
+            "demo-1.0.data/purelib/six.py",
+            "demo-1.0.data/platlib/fast/__init__.py",
+            "demo-1.0.data/platlib/fast/_c.cp314-win_arm64.pyd",
+            "demo-1.0.data/platlib/ns/plugin/mod.py",
+            "demo-1.0.data/scripts/script.py",
+            "demo-1.0.dist-info/RECORD",
+        )
+        self.assertEqual(got, {"modules": ["fast._c", "ns.plugin.mod", "pure.core", "six"],
+                               "packages": ["fast", "pure"]})  # fmt: skip
+
+    def test_site_packages_paths(self):
+        paths = gap_wheels.build_lab.site_packages_paths
+        info = "demo-1.0.dist-info/RECORD"
+        self.assertEqual(paths([
+            "demo/__init__.py", "six.py", "demo/", info,
+            "demo/x.data/purelib/y.py",  # only a top-level .data folder is a data directory
+            "demo-1.0.data/purelib/demo/core.py",
+            "demo-1.0.data/platlib/demo/",
+            "demo-1.0.data/platlib/", "demo-1.0.data/purelib",  # nothing under them
+            "demo-1.0.data/scripts/tool.py", "demo-1.0.data/headers/x.h", "demo-1.0.data/data/demo/core.py",
+            "demo-1.0.data/Purelib/demo/core.py",  # scheme names are exact
+            "demo-1.0.dist-info", "demo.data/purelib/z.py", "demo-1.0.data",
+        ]), ["demo/__init__.py", "six.py", "demo/", "demo/x.data/purelib/y.py", "demo/core.py", "demo/"])
+        # The data directory is the one .dist-info folder's name, with .data: not another version's, nor a guess.
+        self.assertEqual(paths(["demo_pkg-2.0.dist-info/RECORD", "demo_pkg-2.0.data/platlib/m.py",
+                                "demo-pkg-2.0.data/platlib/n.py"]), ["m.py"])  # fmt: skip
+        self.assertEqual(paths(["demo-1.0.data/platlib/m.py"]), [])
+        self.assertEqual(paths([info, "demo-2.0.dist-info/RECORD", "demo-1.0.data/platlib/m.py"]), [])
 
     def test_a_folder_with_a_dot_in_its_name_is_ignored(self):
         self.assertEqual(self.modules("demo/__init__.py", "demo/x.data/y.py"), (["demo"], [], 0))
@@ -1325,11 +1388,12 @@ class WheelModules(unittest.TestCase):
             "ns/plugin/mod.py",  # `ns` and `ns.plugin` have no __init__.py, so they aren't regular packages
             "demo/my-module.py",
             "demo-1.0.dist-info/RECORD",
-            "demo-1.0.data/purelib/extra.py",
+            "demo-1.0.data/purelib/extra.py",  # installed as site-packages/extra.py
+            "demo-1.0.data/scripts/script.py",  # not importable
         )
         self.assertEqual(got, {
             "modules": ["demo._a", "demo._b", "demo._c", "demo.core", "demo.libfoo", "demo.sub.deep",
-                        "demo.tests.test_core", "ns.plugin.mod", "six"],
+                        "demo.tests.test_core", "extra", "ns.plugin.mod", "six"],
             "packages": ["demo", "demo.sub", "demo.tests"],
         })  # fmt: skip
 
@@ -1863,6 +1927,25 @@ class NativeWithoutExtensions(unittest.TestCase):
             with mock.patch.object(gap_wheels.os, "name", "posix"):
                 self.assertEqual(gap_wheels.native_libraries(w), ["tool/libbar.so", "tool/libfoo.so.1.2"])
             self.assertTrue(gap_wheels.has_libs_folder(w))
+
+    def test_native_libraries_under_platlib_are_named_by_where_they_are_installed(self):
+        # NATIVE_LOAD joins each path to site-packages, so a library under .data/platlib is named without those two
+        # parts; a .libs folder there is site-packages' top-level .libs folder, as at the root.
+        members = {"x-1.0.data/platlib/tool/__init__.py": b"", "x-1.0.data/platlib/tool/libfoo.so": b"",
+                   "x-1.0.data/purelib/tool/bin/lib_tool.dll": b"",
+                   "x-1.0.data/platlib/tool.libs/libgomp-24e2ab19.so.1.0.0": b"",
+                   "x-1.0.data/data/share/libdata.so": b"", "x-1.0.data/scripts/odd.dll": b""}  # fmt: skip
+        with tempfile.TemporaryDirectory() as tmp:
+            w = Path(tmp) / "x.whl"
+            w.write_bytes(whl(members, dist="x-1.0"))
+            with mock.patch.object(gap_wheels.os, "name", "nt"):
+                self.assertEqual(gap_wheels.native_libraries(w), ["tool/bin/lib_tool.dll"])
+            with mock.patch.object(gap_wheels.os, "name", "posix"):
+                self.assertEqual(gap_wheels.native_libraries(w), ["tool/libfoo.so"])
+            self.assertTrue(gap_wheels.has_libs_folder(w))
+            w.write_bytes(whl({"x-1.0.data/platlib/tool/libfoo.so": b"", "x-1.0.data/data/tool.libs/y.so": b"",
+                               "tool/sub.libs/z.so": b""}, dist="x-1.0"))  # fmt: skip
+            self.assertFalse(gap_wheels.has_libs_folder(w))
 
     def finish(self, built, missing, platform_pattern=r"win_arm64", spaces=(), inits=(set(), set()), *, bundle, retag):
         work = Path("work")

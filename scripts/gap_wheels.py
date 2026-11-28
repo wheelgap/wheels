@@ -2434,15 +2434,15 @@ print("native-ok", len(spec["native"]))
 
 
 def native_libraries(wheel: Path) -> list[str]:
-    """The native libraries a wheel installs for this system (.dll on Windows, .so and .so.N elsewhere), by path in the
-    wheel, not extension modules: the files the package loads itself. Not in .dist-info or .data, nor in a top-level
-    .libs folder: loading a bundled library first would let it answer for its mangled name whatever the search path,
-    so those are loaded only as the others' dependencies."""
+    """The native libraries a wheel installs for this system (.dll on Windows, .so and .so.N elsewhere), by path in
+    site-packages (build_lab.site_packages_paths), not extension modules: the files the package loads itself. Not in
+    .dist-info or .data's other folders, nor in a top-level .libs folder: loading a bundled library first would let it
+    answer for its mangled name whatever the search path, so those are loaded only as the others' dependencies."""
     with zipfile.ZipFile(wheel) as z:
-        names = [n for n in z.namelist() if not n.endswith("/")]
+        names = [n for n in build_lab.site_packages_paths(z.namelist()) if not n.endswith("/")]
     keep = []
     for n in names:
-        if "/" in n and n.split("/", 1)[0].endswith((".dist-info", ".data", ".libs")):
+        if "/" in n and n.split("/", 1)[0].endswith(".libs"):
             continue
         if os.name == "nt":
             if n.lower().endswith(".dll"):
@@ -2453,8 +2453,10 @@ def native_libraries(wheel: Path) -> list[str]:
 
 
 def has_libs_folder(wheel: Path) -> bool:
+    """Whether the wheel installs a top-level .libs folder into site-packages (build_lab.site_packages_paths)."""
     with zipfile.ZipFile(wheel) as z:
-        return any("/" in n and n.split("/", 1)[0].endswith(".libs") for n in z.namelist())
+        names = build_lab.site_packages_paths(z.namelist())
+    return any("/" in n and n.split("/", 1)[0].endswith(".libs") for n in names)
 
 
 def cmd_install_test(args: argparse.Namespace) -> int:
