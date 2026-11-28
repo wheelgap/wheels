@@ -635,10 +635,21 @@ def grafted_library_problem(wheel: bytes) -> str | None:
     """Why a wheel built with library recipes isn't linked the way a recipe says (None if it is): a recipe's library
     is static, so auditwheel has nothing to bundle and the wheel has no <dist>.libs/ folder. One there means the
     extension linked a shared library from somewhere other than the recipe's checked source (a shared library that
-    isn't bundled is refused by missing_libs already). Trusted side: it only reads the wheel's member names."""
+    isn't bundled is refused by missing_libs already). The folder is found by where it's installed
+    (build_lab.site_packages_paths), so one under <dist>.data/platlib/ or purelib/ counts too. As a refusal it takes
+    pip's wider view as well: pip installs purelib/ and platlib/ from any top-level *.data folder, not only the one
+    named after the .dist-info folder, so a .libs folder under any of them counts. Trusted side: it only reads the
+    wheel's member names."""
     try:
         with zipfile.ZipFile(io.BytesIO(wheel)) as z:
-            grafted = any("/" in n and n.partition("/")[0].endswith(".libs") for n in z.namelist())
+            members = z.namelist()
+        names = build_lab.site_packages_paths(members)
+        for n in members:  # pip: every top-level *.data folder's purelib/ and platlib/
+            top, _, rest = n.partition("/")
+            scheme, _, path = rest.partition("/")
+            if top.endswith(".data") and scheme in ("purelib", "platlib") and path:
+                names.append(path)
+        grafted = any("/" in n and n.partition("/")[0].endswith(".libs") for n in names)
     except Exception:  # noqa: BLE001  (an odd zip: a reason, never a crashed batch)
         return "couldn't read its members"
     return "bundles a shared library in a .libs folder; a recipe's library must be linked in statically" if grafted else None
