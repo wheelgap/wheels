@@ -8,7 +8,7 @@ working.)
 Let [wheelgap](https://github.com/wheelgap/wheelgap) 0.14.0 or later check your requirements file or lockfile:
 
 ```
-uvx wheelgap --fix requirements.txt
+uvx wheelgap@latest --fix requirements.txt
 ```
 
 For each gap, [`--fix`](https://wheelgap.github.io/wheelgap/cli/#fix) names an upgrade to an official release first,

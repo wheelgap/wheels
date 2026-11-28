@@ -654,8 +654,10 @@ class Index(unittest.TestCase):
         page = (self.build([wheel()]) / "index.html").read_text(encoding="utf-8")
         how = page.split("<h2>How to use it</h2>", 1)[1].split("</section>", 1)[0]
         text = html.unescape(re.sub(r"<[^>]+>", "", how))
-        command = "<pre><code>uvx wheelgap --fix requirements.txt</code></pre>"
+        # @latest: a bare `uvx wheelgap` runs an older wheelgap installed with `uv tool install`, which has no --fix (#56).
+        command = "<pre><code>uvx wheelgap@latest --fix requirements.txt</code></pre>"
         self.assertIn(command, how)
+        self.assertNotIn("uvx wheelgap --fix", page)
         self.assertLess(how.index(command), how.index("<pre><code>pip install --extra-index-url"))
         self.assertIn("wheelgap 0.14.0 or later", text)
         self.assertIn('<a href="https://wheelgap.github.io/wheelgap/cli/#fix"><code>--fix</code></a>', how)
@@ -666,8 +668,9 @@ class Index(unittest.TestCase):
         self.assertNotIn("on its main branch", page)
         # The README says the same.
         readme = (Path(__file__).resolve().parent.parent / "README.md").read_text(encoding="utf-8")
-        self.assertLess(readme.index("uvx wheelgap --fix requirements.txt"), readme.index("pip install --extra-index-url"))
+        self.assertLess(readme.index("uvx wheelgap@latest --fix requirements.txt"), readme.index("pip install --extra-index-url"))
         self.assertIn("wheelgap/wheelgap) 0.14.0 or later", readme)
+        self.assertNotIn("uvx wheelgap --fix", readme)
         self.assertNotIn("not in a release yet", readme)
 
     def test_our_wheel_follows_pypi_yanking_its_release(self):
